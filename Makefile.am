@@ -3,3 +3,5 @@ SUBDIRS = src
 
 EXTRA_DIST = README.md TODO.md
 
+ACLOCAL_AMFLAGS = -I m4
+
