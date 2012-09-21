@@ -2,6 +2,9 @@
 #ifndef PEAKOLATOR_H
 #define PEAKOLATOR_H
 
+#include <stdlib.h>
+#include <stdint.h>
+
 /* TODO:
  *   We need a zero-compressed uint vector that supports reasonably efficient
  *   random access.
@@ -23,9 +26,14 @@
  * */
 typedef struct vector_t_ vector_t;
 
+typedef uint32_t val_t;
+typedef uint32_t idx_t;
 
-
-
+vector_t* vector_create(const val_t* data, size_t n);
+void vector_free(vector_t* vec);
+idx_t vector_find_block(const vector_t* vec, idx_t i);
+val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v);
+val_t vector_sum(const vector_t* vec, idx_t i, idx_t j);
 
 #endif
 

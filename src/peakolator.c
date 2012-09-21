@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 #include "peakolator.h"
 
@@ -44,9 +45,6 @@ void* realloc_or_die(void* ptr, size_t n)
 
 #define BLOCK_SIZE 1024
 
-
-typedef uint32_t val_t;
-typedef uint32_t idx_t;
 
 
 static idx_t idxmin(idx_t a, idx_t b)
@@ -130,8 +128,8 @@ vector_t* vector_create(const val_t* data, size_t n)
     val_t block_sum = 0;
 
     for (i = 0, m = 0; i < n; ++i) {
-        if (i % BLOCK_SIZE == 0) {
-            if (block_sum > 0) ++m;
+        if (i > 0 && i % BLOCK_SIZE == 0 && block_sum > 0) {
+            ++m;
             block_sum = 0;
         }
 
@@ -139,6 +137,7 @@ vector_t* vector_create(const val_t* data, size_t n)
     }
 
     if (block_sum > 0) ++m;
+    ++m;
 
     /* Allocate */
     vec->n = n;
@@ -149,18 +148,25 @@ vector_t* vector_create(const val_t* data, size_t n)
     /* Initialize */
     size_t j; /* block index */
     size_t k; /* within block index */
-    for (i = 0, j = 0, block_sum = 0; i < n; ++i, ++k) {
-        if (i % BLOCK_SIZE == 0) {
+    vec->blocks[j].idx = 0;
+    for (i = 0, j = 0, k = 0, block_sum = 0; i < n; ++i, ++k) {
+        if (i > 0 && i % BLOCK_SIZE == 0) {
             if (block_sum > 0) {
                 vec->blocks[j].sum = block_sum;
-                vec->blocks[j].idx = i - BLOCK_SIZE;
                 ++j;
             }
+
+            vec->blocks[j].idx = i;
             k = 0;
+            block_sum = 0;
         }
 
         vec->blocks[j].xs[k] = data[i];
         block_sum += data[i];
+    }
+
+    if (block_sum > 0) {
+        vec->blocks[j].sum = block_sum;
     }
 
     return vec;
@@ -179,9 +185,10 @@ void vector_free(vector_t* vec)
 }
 
 
-/* Find the largest block index j, such that vec->blocks[j].idx <= i.
+/* Find the block index corresponding to the given genomic index.
  *
- * Assuming that u <= j < v.
+ * Specifically, find the largest j, such that vec->blocks[j].idx <= i,
+ * or, if there is no such j, the smallest j such that * vec->blocks[j].idx > i.
  *
  * Args:
  *   vec: A sparse vector.
@@ -192,12 +199,13 @@ void vector_free(vector_t* vec)
  * Returns:
  *   An block index j corresponding to the genomic index.
  *
+ *
  */
 idx_t vector_find_block_bound(const vector_t* vec, idx_t i, idx_t u, idx_t v)
 {
     idx_t mid;
     while (u + 1 < v) {
-        mid = (v - u) / 2;
+        mid = u + (v - u) / 2;
         if (vec->blocks[mid].idx <= i) u = mid;
         else                           v = mid;
     }
@@ -236,13 +244,15 @@ idx_t vector_find_block(const vector_t* vec, idx_t i)
  */
 val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v)
 {
-    idx_t span = j - i + 1;
     idx_t w = vector_find_block_bound(vec, i, u, v);
+
     val_t sum = 0;
 
-    idx_t block_pos = i - vec->blocks[w].idx;
-    sum += block_sum(&vec->blocks[w],
-                     block_pos, idxmin(block_pos + span - 1, BLOCK_SIZE - 1));
+    if (vec->blocks[w].idx <= j && vec->blocks[w].idx + BLOCK_SIZE - 1 >= i) {
+        idx_t a = vec->blocks[w].idx >= i ? 0 : i - vec->blocks[w].idx;
+        idx_t b = idxmin(j - vec->blocks[w].idx, BLOCK_SIZE - 1);
+        sum += block_sum(&vec->blocks[w], a, b);
+    }
     ++w;
 
     while (w < vec->m && vec->blocks[w].idx + BLOCK_SIZE - 1 <= j) {
@@ -250,11 +260,16 @@ val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v)
         ++w;
     }
 
-    if (vec->blocks[w].idx <= j) {
+    if (w < vec->m && vec->blocks[w].idx <= j) {
         sum += block_sum(&vec->blocks[w], 0, j - vec->blocks[w].idx);
     }
 
     return sum;
 }
 
+
+val_t vector_sum(const vector_t* vec, idx_t i, idx_t j)
+{
+    return vector_sum_bound(vec, i, j, 0, vec->m);
+}
 
