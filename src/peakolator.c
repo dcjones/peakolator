@@ -108,16 +108,7 @@ struct vector_t_
 /* Operations on vectors. */
 
 
-/* Create a new sparse vector from a dense vector.
- *
- * Args:
- *   data: A dense vector of values.
- *   n: Length of the vector.
- *
- * Returns:
- *   An new sparse vector containing the same values as data.
- *
- */
+/* Create a new sparse vector from a dense vector. */
 vector_t* vector_create(const val_t* data, size_t n)
 {
     vector_t* vec = malloc_or_die(sizeof(vector_t));
@@ -173,11 +164,7 @@ vector_t* vector_create(const val_t* data, size_t n)
 }
 
 
-/* Free an allocated sparse vector.
- *
- * Args:
- *   vec: A sparse vector to be freed.
- */
+/* Free an allocated sparse vector. */
 void vector_free(vector_t* vec)
 {
     free(vec->blocks);
@@ -229,19 +216,7 @@ idx_t vector_find_block(const vector_t* vec, idx_t i)
 }
 
 
-/* Find the sume of the values in the genomic interval [i, j].
- *
- * Args:
- *   vec: A sparse vector.
- *   i: Interval start.
- *   j: Interval end.
- *   u: Lower bound on block interval containing i.
- *   v: Upper bound on block interval containing i.
- *
- * Return:
- *   A sum of the values in [i, j].
- *
- */
+/* Find the sum of the values in the genomic interval [i, j]. */
 val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v)
 {
     idx_t w = vector_find_block_bound(vec, i, u, v);
@@ -268,6 +243,7 @@ val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v)
 }
 
 
+/* Find the sum of the values in the genomic interval [i, j]. */
 val_t vector_sum(const vector_t* vec, idx_t i, idx_t j)
 {
     return vector_sum_bound(vec, i, j, 0, vec->m);
