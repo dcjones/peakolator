@@ -1,8 +1,9 @@
-#include <stdlib.h>
+#include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 
 #include "peakolator.h"
 
@@ -34,16 +35,26 @@ void* realloc_or_die(void* ptr, size_t n)
 }
 
 
+/* Call pthread_mutex_init and exit on failure. */
 void pthread_mutex_init_or_die(pthread_mutex_t* mutex,
                                const pthread_mutexattr_t* attr)
 {
     if (pthread_mutex_init(mutex, attr) != 0) {
-        fprintf(stderr, "Failed to init mutex.\n");
+        fprintf(stderr, "Failed to init pthreads mutex.\n");
         exit(EXIT_FAILURE);
     }
 }
 
 
+/* Call pthread_cond_init and exit on failure. */
+void pthread_cond_init_or_die(pthread_cond_t* cond,
+                              const pthread_condattr_t* attr)
+{
+    if (pthread_cond_init(cond, attr) != 0) {
+        fprintf(stderr, "Failed to init pthreads cond.\n");
+        exit(EXIT_FAILURE);
+    }
+}
 
 
 /* Sparse vectors */
@@ -184,6 +195,13 @@ void vector_free(vector_t* vec)
 }
 
 
+/* Length of the vector. */
+idx_t vector_len(const vector_t* vec)
+{
+    return vec->n;
+}
+
+
 /* Find the block index corresponding to the given genomic index.
  *
  * Specifically, find the largest j, such that vec->blocks[j].idx <= i,
@@ -314,6 +332,9 @@ struct pqueue_t_
     /* Coarse lock. */
     pthread_mutex_t mutex;
 
+    /* Signal waiters that an item is available. */
+    pthread_cond_t cond;
+
     /* Number of items in the heap. */
     size_t n;
 
@@ -322,6 +343,9 @@ struct pqueue_t_
 
     /* Items. */
     interval_t* xs;
+
+    /* True when no more items will be pushed, and dequeue should not block. */
+    bool finished;
 };
 
 
@@ -332,7 +356,9 @@ pqueue_t* pqueue_create()
     q->n = 0;
     q->size = 1024;
     q->xs = malloc_or_die(q->size * sizeof(interval_t));
+    q->finished = false;
     pthread_mutex_init_or_die(&q->mutex, NULL);
+    pthread_cond_init_or_die(&q->cond, NULL);
     return q;
 }
 
@@ -341,6 +367,7 @@ pqueue_t* pqueue_create()
 void pqueue_free(pqueue_t* q)
 {
     pthread_mutex_destroy(&q->mutex);
+    pthread_cond_destroy(&q->cond);
     free(q->xs);
     free(q);
 }
@@ -381,6 +408,7 @@ void pqueue_enqueue(pqueue_t* q, const interval_t* interval)
     }
 
     pthread_mutex_unlock(&q->mutex);
+    pthread_cond_signal(&q->cond);
 }
 
 
@@ -389,7 +417,11 @@ bool pqueue_dequeue(pqueue_t* q, interval_t* interval)
 {
     pthread_mutex_lock(&q->mutex);
 
-    if (q->n == 0) {
+    while (q->n == 0 && !q->finished) {
+        pthread_cond_wait(&q->cond, &q->mutex);
+    }
+
+    if (q->n == 0 && q->finished) {
         pthread_mutex_unlock(&q->mutex);
         return false;
     }
@@ -422,13 +454,48 @@ bool pqueue_dequeue(pqueue_t* q, interval_t* interval)
 }
 
 
-
-/* Just sketching stuff out here. */
-#if 0
-
-static void* peakolator_thread(void* param)
+/* Mark a queue as finished. */
+void pqueue_finish(pqueue_t* q)
 {
+    pthread_mutex_lock(&q->mutex);
+    q->finished = true;
+    pthread_mutex_unlock(&q->mutex);
 
+    // In case anyone is waiting on an item that will never arrive.
+    pthread_cond_broadcast(&q->cond);
+}
+
+
+/* Parameters passed to each peakolator thread. */
+typedef struct peakolator_thread_param_t_
+{
+    /* Fragments left to search. */
+    pqueue_t* in;
+
+    /* Current highest density interval. Density is -Inf if none has been found
+     * yet. */
+    interval_t best;
+
+    /* Mutex for atomic access to "best". */
+    pthread_mutex_t best_mutex;
+} peakolator_thread_param_t;
+
+
+/* A single peakolator thread. */
+static void* peakolator_thread(void* param_)
+{
+    peakolator_thread_param_t* param = (peakolator_thread_param_t*) param_;
+    interval_t interval;
+
+    while (pqueue_dequeue(param->in, &interval)) {
+        /* TODO
+         * The algorithm proper.
+         *
+         *
+         * */
+    }
+
+    return NULL;
 }
 
 
@@ -436,21 +503,67 @@ void peakolate_async(const vector_t* vec,
                      density_function_t f,
                      prior_function_t g,
                      pqueue_t* out,
+                     int num_threads,
                      pthread_cond_t* cond)
 {
-    /* How many threads to launch? */
-    size_t num_threads = 8;
+    /* TODO: if num_threads <= 0 set it to be equal to the number of cores. */
+
     pthread_t* threads = malloc_or_die(num_threads * sizeof(pthread_t));
 
-    size_t i;
-    for (i = 0; i < num_threads; ++i) {
-        /*pthread_create(&theads[i], NULL, peakolator_thread, XXX);*/
+    peakolator_thread_param_t param;
+    param.in = pqueue_create();
+    pthread_mutex_init_or_die(&param.best_mutex, NULL);
+
+    /* Queue of intervals left to search. */
+    pqueue_t* q = pqueue_create();
+
+    /* Make the pqueue non-blocking. We are just using it in one thread as a
+     * regular old queue. */
+    pqueue_finish(q);
+
+    interval_t interval;
+    interval.start = 0;
+    interval.end = vector_len(vec);
+    pqueue_enqueue(q, &interval);
+
+    while (pqueue_dequeue(q, &interval)) {
+        /* TODO: place initial interval in param.in */
+        param.best.density = -INFINITY;
+
+        int i;
+        for (i = 0; i < num_threads; ++i) {
+            pthread_create(&threads[i], NULL, peakolator_thread, &param);
+        }
+
+        for (i = 0; i < num_threads; ++i) {
+            pthread_join(threads[i], NULL);
+        }
+
+        if (param.best.density != -INFINITY) {
+            if (out) pqueue_enqueue(out, &param.best);
+
+            if (param.best.start > interval.start) {
+                /* TODO: enqueue [interval.start, param.best.start - 1] */
+            }
+
+            if (param.best.end < interval.end) {
+                /* TODO: enqueue [param.best.end + 1, interval.end] */
+            }
+        }
     }
 
-
+    pqueue_free(q);
+    pqueue_free(param.in);
+    pthread_mutex_destroy(&param.best_mutex);
     free(threads);
+
+    /* On second thought, maybe we should just have a bool* and flip it when
+     * finished. Then the caller can just poll. */
+    if (cond) pthread_cond_broadcast(cond);
 }
 
+
+#if 0
 
 void peoklate(const vector_t* vec,
               density_function_t f,
@@ -478,5 +591,6 @@ void peoklate(const vector_t* vec,
 }
 
 #endif
+
 
 

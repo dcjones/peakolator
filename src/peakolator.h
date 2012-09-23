@@ -38,6 +38,10 @@ vector_t* vector_create(const val_t* data, size_t n);
 void vector_free(vector_t* vec);
 
 
+/* Length of the vector. */
+idx_t vector_len(const vector_t* vec);
+
+
 /* Find the sum of the values in genomic interval [i, j].
  *
  * Args:
@@ -81,7 +85,16 @@ typedef struct interval_t_
 void sort_intervals_asc(interval_t* xs, size_t n);
 
 
-/*  */
+/* Compare two intervals.
+ *
+ * Args:
+ *   a: An interval.
+ *   b: Another interval.
+ *
+ * Returns:
+ *   Returns 0 if the intervals are equal (including equal densities),
+ *   and non-zero otherwise. (Hint: this is just a wrapper around memcmp.)
+ */
 int interval_cmp(const interval_t* a, const interval_t* b);
 
 
@@ -97,12 +110,40 @@ pqueue_t* pqueue_create();
 void pqueue_free(pqueue_t*);
 
 
-/* Insert an item into the priority queue. */
+/* Insert an item into the priority queue.
+ *
+ * Args:
+ *   q: A pqueue.
+ *   interval: Interval to enqueue.
+ */
 void pqueue_enqueue(pqueue_t* q, const interval_t* interval);
 
 
-/* Pop the item with the largest density from the queue. */
+/* Pop the item with the largest density from the queue.
+ *
+ * If the queue is empty, this function will block until an item becomes
+ * available, unless pqueue_finish has been called, in which case it will return
+ * immediately.
+ *
+ * Args:
+ *   q: A pqueue.
+ *   interval: Location to copy popped interval.
+ *
+ * Returns:
+ *   false if the queue is finished and empty.
+ */
 bool pqueue_dequeue(pqueue_t* q, interval_t* interval);
+
+
+/* Mark a queue as finished.
+ *
+ * After calling this no more items can be equeued and calls to pqueue_dequeue
+ * will return immediately when the queue is empty.
+ *
+ * Args:
+ *  q: A pqueue.
+ */
+void pqueue_finish(pqueue_t* q);
 
 
 /* A density function. */
@@ -143,7 +184,9 @@ void peakolate_async(const vector_t* vec,
                      density_function_t f,
                      prior_function_t g,
                      pqueue_t* out,
+                     int num_threads,
                      pthread_cond_t* cond);
 
 #endif
+
 
