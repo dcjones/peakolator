@@ -1,4 +1,3 @@
-
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,6 +34,18 @@ void* realloc_or_die(void* ptr, size_t n)
 }
 
 
+void pthread_mutex_init_or_die(pthread_mutex_t* mutex,
+                               const pthread_mutexattr_t* attr)
+{
+    if (pthread_mutex_init(mutex, attr) != 0) {
+        fprintf(stderr, "Failed to init mutex.\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+
+
+
 /* Sparse vectors */
 
 
@@ -46,17 +57,18 @@ void* realloc_or_die(void* ptr, size_t n)
 #define BLOCK_SIZE 1024
 
 
-
 static idx_t idxmin(idx_t a, idx_t b)
 {
     return a < b ? a : b;
 }
 
 
+#if 0
 static idx_t idxmax(idx_t a, idx_t b)
 {
     return a > b ? a : b;
 }
+#endif
 
 
 typedef struct block_t_
@@ -212,7 +224,7 @@ idx_t vector_find_block_bound(const vector_t* vec, idx_t i, idx_t u, idx_t v)
  */
 idx_t vector_find_block(const vector_t* vec, idx_t i)
 {
-    vector_find_block_bound(vec, i, 0, vec->m);
+    return vector_find_block_bound(vec, i, 0, vec->m);
 }
 
 
@@ -248,4 +260,223 @@ val_t vector_sum(const vector_t* vec, idx_t i, idx_t j)
 {
     return vector_sum_bound(vec, i, j, 0, vec->m);
 }
+
+
+/* Copy an interval. */
+static void interval_copy(interval_t* dest, const interval_t* src)
+{
+    memcpy(dest, src, sizeof(interval_t));
+}
+
+
+/* Swap two intervals. */
+static void interval_swap(interval_t* a, interval_t* b)
+{
+    interval_t tmp;
+    interval_copy(&tmp, a);
+    interval_copy(a, b);
+    interval_copy(b, &tmp);
+}
+
+
+/* Comparison function for sorting intervals in asceding order. */
+static int interval_cmp_asc(const void* a_, const void* b_)
+{
+    const interval_t* a = (interval_t*) a_;
+    const interval_t* b = (interval_t*) b_;
+
+    if      (a->density == b->density) return 0;
+    else if (a->density <  b->density) return 1;
+    else                               return -1;
+}
+
+
+/* Sort an array of interval in descending order. */
+void sort_intervals_asc(interval_t* xs, size_t n)
+{
+    qsort(xs, n, sizeof(interval_t), interval_cmp_asc);
+}
+
+
+/* Compare two intervals. */
+int interval_cmp(const interval_t* a, const interval_t* b)
+{
+    return memcmp(a, b, sizeof(interval_t));
+}
+
+
+/* A concurrent priority queue for genomic intervals.
+ *
+ * This is just a coarsely locked binary max-heap, nothing fancy.
+ */
+struct pqueue_t_
+{
+    /* Coarse lock. */
+    pthread_mutex_t mutex;
+
+    /* Number of items in the heap. */
+    size_t n;
+
+    /* Size reserved. */
+    size_t size;
+
+    /* Items. */
+    interval_t* xs;
+};
+
+
+/* Create a new priority queue. */
+pqueue_t* pqueue_create()
+{
+    pqueue_t* q = malloc_or_die(sizeof(pqueue_t));
+    q->n = 0;
+    q->size = 1024;
+    q->xs = malloc_or_die(q->size * sizeof(interval_t));
+    pthread_mutex_init_or_die(&q->mutex, NULL);
+    return q;
+}
+
+
+/* Free an priority queue created with pqueue_create. */
+void pqueue_free(pqueue_t* q)
+{
+    pthread_mutex_destroy(&q->mutex);
+    free(q->xs);
+    free(q);
+}
+
+
+/* Double the size reserved for a heap. */
+static void pqueue_expand(pqueue_t* q)
+{
+    q->size *= 2;
+    q->xs = realloc_or_die(q->xs, q->size * sizeof(interval_t));
+}
+
+
+/* Binary heap index function. */
+static inline size_t pqueue_parent_idx (size_t i) { return (i - 1) / 2; }
+static inline size_t pqueue_left_idx   (size_t i) { return 2 * i + 1; }
+static inline size_t pqueue_right_idx  (size_t i) { return 2 * i + 2; }
+
+
+/* Enqueue an item. */
+void pqueue_enqueue(pqueue_t* q, const interval_t* interval)
+{
+    pthread_mutex_lock(&q->mutex);
+
+    /* insert */
+    if (q->n == q->size) pqueue_expand(q);
+    size_t j, i = q->n++;
+    interval_copy(&q->xs[i], interval);
+
+    /* percolate up */
+    while (i > 0) {
+        j = pqueue_parent_idx(i);
+        if (q->xs[j].density < q->xs[i].density) {
+            interval_swap(&q->xs[i], &q->xs[j]);
+            i = j;
+        }
+        else break;
+    }
+
+    pthread_mutex_unlock(&q->mutex);
+}
+
+
+/* Pop the item with the largest density from the queue. */
+bool pqueue_dequeue(pqueue_t* q, interval_t* interval)
+{
+    pthread_mutex_lock(&q->mutex);
+
+    if (q->n == 0) {
+        pthread_mutex_unlock(&q->mutex);
+        return false;
+    }
+
+    interval_copy(interval, &q->xs[0]);
+
+    /* replace head */
+    interval_copy(&q->xs[0], &q->xs[--q->n]);
+
+    /* percolate down */
+    size_t l, r, j, i = 0;
+    while (true) {
+        l = pqueue_left_idx(i);
+        r = pqueue_right_idx(i);
+
+        if (l < q->n) {
+            j = r < q->n && q->xs[r].density > q->xs[l].density ? r : l;
+
+            if (q->xs[j].density > q->xs[i].density) {
+                interval_swap(&q->xs[j], &q->xs[i]);
+                i = j;
+            }
+            else break;
+        }
+        else break;
+    }
+
+    pthread_mutex_unlock(&q->mutex);
+    return true;
+}
+
+
+
+/* Just sketching stuff out here. */
+#if 0
+
+static void* peakolator_thread(void* param)
+{
+
+}
+
+
+void peakolate_async(const vector_t* vec,
+                     density_function_t f,
+                     prior_function_t g,
+                     pqueue_t* out,
+                     pthread_cond_t* cond)
+{
+    /* How many threads to launch? */
+    size_t num_threads = 8;
+    pthread_t* threads = malloc_or_die(num_threads * sizeof(pthread_t));
+
+    size_t i;
+    for (i = 0; i < num_threads; ++i) {
+        /*pthread_create(&theads[i], NULL, peakolator_thread, XXX);*/
+    }
+
+
+    free(threads);
+}
+
+
+void peoklate(const vector_t* vec,
+              density_function_t f,
+              prior_function_t g)
+{
+    pqueue_t* out;
+    /* TODO: create */
+
+    /* TODO: Check the output of pthread functions. */
+    pthread_cond_t cond;
+    pthread_cond_init(&cond, NULL);
+
+    pthread_mutex_t mutex;
+    pthread_mutex_init(&mutex, NULL);
+    pthread_mutex_lock(&mutex);
+
+    peakolate_async(vec, f, g, out, &cond);
+
+    pthread_cond_wait(&cond, &mutex);
+
+    pthread_cond_destroy(&cond);
+    pthread_mutex_destroy(&mutex);
+
+    /* TODO: Return something. Dump `out`. */
+}
+
+#endif
+
 

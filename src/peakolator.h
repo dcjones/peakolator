@@ -4,6 +4,8 @@
 
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <pthread.h>
 
 /* Zero compressed uint zectors. Peakolator scans across vectors cooresponding
  * to genomic sequences, with each position assigned a natural number.
@@ -66,6 +68,82 @@ val_t vector_sum(const vector_t* vec, idx_t i, idx_t j);
  */
 val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v);
 
+
+/* A representation of the interval [start, end] with an associated density. */
+typedef struct interval_t_
+{
+    idx_t start, end;
+    double density;
+} interval_t;
+
+
+/* Sort an array of interval in ascending order. */
+void sort_intervals_asc(interval_t* xs, size_t n);
+
+
+/*  */
+int interval_cmp(const interval_t* a, const interval_t* b);
+
+
+/* A priority queue for genomic intervals. */
+typedef struct pqueue_t_ pqueue_t;
+
+
+/* Create a new priority queue. */
+pqueue_t* pqueue_create();
+
+
+/* Free an priority queue created with pqueue_create. */
+void pqueue_free(pqueue_t*);
+
+
+/* Insert an item into the priority queue. */
+void pqueue_enqueue(pqueue_t* q, const interval_t* interval);
+
+
+/* Pop the item with the largest density from the queue. */
+bool pqueue_dequeue(pqueue_t* q, interval_t* interval);
+
+
+/* A density function. */
+typedef double (*density_function_t)(val_t, idx_t);
+
+
+/* A prior over interval length. */
+typedef double (*prior_function_t)(idx_t);
+
+
+/* Repeatedly find high density intervals.
+ *
+ * TODO: Figure out what this should return.
+ *
+ */
+void peoklate(const vector_t* vec,
+              density_function_t f,
+              prior_function_t g);
+
+
+/* Repeatedly find high density intervals.
+ *
+ * Same as `peakolate` but returns immediately, running asynchonously and
+ * placing output in the given priority queue. Upon completion in will broadcast
+ * on the given condition, if one is given.
+ *
+ * Args:
+ *   vec: Data to segment.
+ *   f: Density function. (Behavior is undefined if this function is not a
+ *      proper density function.)
+ *   g: Prior on the length of intervals, or NULL for a flat prior.
+ *   out: A priority queue on which intervals will be placed, or NULL to ignore
+ *        output.
+ *   cond: A condition on which peakolate will broadcast its completion. If
+ *   NULL, it still run asynchronously but will not broadcast completion.
+ */
+void peakolate_async(const vector_t* vec,
+                     density_function_t f,
+                     prior_function_t g,
+                     pqueue_t* out,
+                     pthread_cond_t* cond);
 
 #endif
 

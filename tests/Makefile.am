@@ -1,8 +1,8 @@
 
 LDADD = ../src/libpeakolator.la
 
-check_PROGRAMS = vector-sums
+check_PROGRAMS = vector-sums pqueue
 
-TESTS = vector-sums
+TESTS = vector-sums pqueue
 
 
