@@ -29,6 +29,8 @@ int main()
             return EXIT_FAILURE;
         }
 
+        pqueue_finish_one(q);
+
         if (memcmp(&xs[i], &x, sizeof(interval_bound_t)) != 0) {
             fprintf(stderr, "Pop number %zu was incorrect.\n", i);
             return EXIT_FAILURE;

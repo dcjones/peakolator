@@ -98,36 +98,6 @@ void sort_intervals_asc(interval_t* xs, size_t n);
 int interval_cmp(const interval_t* a, const interval_t* b);
 
 
-/* A bound on the start and end of an interval. */
-typedef struct interval_bound_t_
-{
-    /* Inclusive interval in which in which the start in bound. */
-    idx_t start_min, start_max;
-
-    /* Inclusive interval in which in which the end in bound. */
-    idx_t end_min, end_max;
-
-    /* An upper bound on the density of any interval within this bound. */
-    double density_max;
-
-    /* An upper bound on the mass of any interval within this bound. */
-    val_t x_max;
-} interval_bound_t;
-
-
-/* Compare two interval bounds;
- *
- * Args:
- *   a: An interval bound.
- *   b: Another interval bound.
- *
- * Returns:
- *   Returns 0 if the bounds are equal and non-zero otherwise.
- *   (Hint: this is just a wrapper around memcmp.)
- */
-int interval_bound_cmp(const interval_bound_t* a, const interval_bound_t* b);
-
-
 /* A density function. */
 typedef double (*density_function_t)(val_t, idx_t);
 

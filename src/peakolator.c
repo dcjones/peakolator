@@ -280,6 +280,92 @@ val_t vector_sum(const vector_t* vec, idx_t i, idx_t j)
 }
 
 
+/* A bound on the start and end of an interval. */
+typedef struct interval_bound_t_
+{
+    /* Inclusive interval in which in which the start in bound. */
+    idx_t start_min, start_max;
+
+    /* Inclusive interval in which in which the end in bound. */
+    idx_t end_min, end_max;
+
+    /* An upper bound on the density of any interval within this bound. */
+    double density_max;
+
+    /* An upper bound on the mass of any interval within this bound. */
+    val_t x_max;
+} interval_bound_t;
+
+
+/* Compare two interval bounds;
+ *
+ * Args:
+ *   a: An interval bound.
+ *   b: Another interval bound.
+ *
+ * Returns:
+ *   Returns 0 if the bounds are equal and non-zero otherwise.
+ *   (Hint: this is just a wrapper around memcmp.)
+ */
+int interval_bound_cmp(const interval_bound_t* a, const interval_bound_t* b);
+
+
+/* Arithmetic with uint64_t that bottoms out rather than overflows. */
+static uint64_t uint64_add(uint64_t a, uint64_t b)
+{
+    return a < UINT64_MAX - b ? a + b : UINT64_MAX;
+}
+
+
+static uint64_t uint64_sub(uint64_t a, uint64_t b)
+{
+    return a > b ? a - b : 0;
+}
+
+
+static uint64_t uint64_mul(uint64_t a, uint64_t b)
+{
+    return b == 0 || a <= UINT64_MAX / b ? a * b : UINT64_MAX;
+}
+
+
+
+/* Count the number of subintervals of length k contained in an interval of size
+ * n, for all k in [k_min, k_max].
+ *
+ * Args:
+ *   n: Size of containing interval.
+ *   k_min: Minimum subinterval length.
+ *   k_max: Maximum subinterval length.
+ *
+ * Returns:
+ *   Number of subintervals, or UINT64_MAX if there are too many to count.
+ */
+static uint64_t subinterval_count(idx_t n_, idx_t k_min_, idx_t k_max_)
+{
+    uint64_t n = n_;
+    uint64_t k_min = k_min_;
+    uint64_t k_max = k_max_;
+
+    if (n < k_min) return 0;
+    if (k_max < k_min) return 0;
+
+    uint64_t m = n < k_max ? n : k_max;
+
+    /* I won't insult you be pretenting this is obvious. It's pretty trikcy. */
+    uint64_t u = uint64_mul(n + 1, m - k_min + 1);
+    uint64_t v = uint64_sub(uint64_mul(m, m + 1), uint64_mul(k_min, k_min - 1));
+    return uint64_sub(u, v / 2);
+}
+
+
+/* Count the number of intervals contained within the bound. */
+static uint64_t interval_bound_count(const interval_bound_t* bound)
+{
+    // TODO
+}
+
+
 /* Copy an interval bound. */
 static void interval_bound_copy(interval_bound_t* dest,
                                 const interval_bound_t* src)
@@ -464,8 +550,8 @@ typedef struct pqueue_t_
     /* Items. */
     interval_bound_t* xs;
 
-    /* True when no more items will be pushed, and dequeue should not block. */
-    bool finished;
+    /* Number of pending items. */
+    size_t pending;
 } pqueue_t;
 
 
@@ -476,7 +562,7 @@ static pqueue_t* pqueue_create()
     q->n = 0;
     q->size = 1024;
     q->xs = malloc_or_die(q->size * sizeof(interval_bound_t));
-    q->finished = false;
+    q->pending = 0;
     pthread_mutex_init_or_die(&q->mutex, NULL);
     pthread_cond_init_or_die(&q->cond, NULL);
     return q;
@@ -554,11 +640,11 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
 {
     pthread_mutex_lock(&q->mutex);
 
-    while (q->n == 0 && !q->finished) {
+    while (q->n == 0 && q->pending > 0) {
         pthread_cond_wait(&q->cond, &q->mutex);
     }
 
-    if (q->n == 0 && q->finished) {
+    if (q->n == 0 && q->pending == 0) {
         pthread_mutex_unlock(&q->mutex);
         return false;
     }
@@ -586,23 +672,26 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
         else break;
     }
 
+    ++q->pending;
     pthread_mutex_unlock(&q->mutex);
     return true;
 }
 
 
-/* Mark a queue as finished.
+/* Decrement the number of pending items.
  *
- * After calling this no more items can be equeued and calls to pqueue_dequeue
- * will return immediately when the queue is empty.
+ * If empty the queue blocks on dequeue unless the number of pending items is
+ * zero. That number is incremented on dequeue. The caller of dequeue has to call
+ * this function at a point where it will not enqueue any more without first
+ * dequeuing.
  *
  * Args:
  *  q: A pqueue.
  */
-static void pqueue_finish(pqueue_t* q)
+static void pqueue_finish_one(pqueue_t* q)
 {
     pthread_mutex_lock(&q->mutex);
-    q->finished = true;
+    if (q->pending > 0) --q->pending;
     pthread_mutex_unlock(&q->mutex);
 
     // In case anyone is waiting on an item that will never arrive.
@@ -726,7 +815,7 @@ static double density_upper_bound(density_function_t f,
 
 
 /* Parameters passed to each peakolator thread. */
-typedef struct peakolator_thread_param_t_
+typedef struct peakolator_ctx_t_
 {
     /* Fragments left to search. */
     pqueue_t* in;
@@ -745,20 +834,32 @@ typedef struct peakolator_thread_param_t_
     prior_lookup_t* g_lookup;
     prior_lookup_t* g_mode_lookup;
 
-} peakolator_thread_param_t;
+} peakolator_ctx_t;
+
+
+/* Perform a brute-force search for the highest-density interval. */
+static void peakolator_brute(peakolator_ctx_t* ctx)
+{
+
+}
+
+
+/* Use brute-force search when there are fewer than this many intervals. */
+static const uint64_t brute_cutoff = 10000;
 
 
 /* A single peakolator thread. */
-static void* peakolator_thread(void* param_)
+static void* peakolator_thread(void* ctx_)
 {
-    peakolator_thread_param_t* param = (peakolator_thread_param_t*) param_;
+    peakolator_ctx_t* ctx= (peakolator_ctx_t*) ctx_;
     interval_bound_t bound;
 
     val_t x;
     idx_t k;
 
-    while (pqueue_dequeue(param->in, &bound)) {
-
+    while (pqueue_dequeue(ctx->in, &bound)) {
+        /* Number of possible intervals.
+         * I recall that this is actually pretty tricky to compute. */
 
 
         /* TODO
@@ -766,6 +867,8 @@ static void* peakolator_thread(void* param_)
          *
          *
          * */
+
+        pqueue_finish_one(ctx->in);
     }
 
     return NULL;
@@ -787,13 +890,13 @@ void peakolate(const vector_t* vec,
     prior_lookup_t* g_lookup = memoize_prior(g, k_min, k_max);
     prior_lookup_t* g_mode_lookup = memoize_prior_mode(g, k_min, k_max);
 
-    peakolator_thread_param_t param;
-    param.in = pqueue_create();
-    pthread_mutex_init_or_die(&param.best_mutex, NULL);
-    param.k_min = k_min;
-    param.k_max = k_max;
-    param.g_lookup = g_lookup;
-    param.g_mode_lookup = g_mode_lookup;
+    peakolator_ctx_t ctx;
+    ctx.in = pqueue_create();
+    pthread_mutex_init_or_die(&ctx.best_mutex, NULL);
+    ctx.k_min = k_min;
+    ctx.k_max = k_max;
+    ctx.g_lookup = g_lookup;
+    ctx.g_mode_lookup = g_mode_lookup;
 
     /* Queue of intervals left to search. */
     interval_stack_t* s = interval_stack_create();
@@ -816,14 +919,14 @@ void peakolate(const vector_t* vec,
         bound.x_max = vector_sum(vec, interval.start, interval.end);
         bound.density_max = density_upper_bound(f, k_min, g_mode_lookup,
                                                 bound.x_max, k);
-        pqueue_enqueue(param.in, &bound);
+        pqueue_enqueue(ctx.in, &bound);
 
-        param.best.density = -INFINITY;
+        ctx.best.density = -INFINITY;
 
         /* Start up a bunch of search threads. */
         int i;
         for (i = 0; i < num_threads; ++i) {
-            pthread_create(&threads[i], NULL, peakolator_thread, &param);
+            pthread_create(&threads[i], NULL, peakolator_thread, &ctx);
         }
 
         for (i = 0; i < num_threads; ++i) {
@@ -831,25 +934,25 @@ void peakolate(const vector_t* vec,
         }
 
         /* Find anything good? */
-        if (param.best.density != -INFINITY) {
-            /* TODO: Do something with param.best when we figure
+        if (ctx.best.density != -INFINITY) {
+            /* TODO: Do something with ctx.best when we figure
              * out what this function returs.. */
 
-            if (param.best.start > interval.start) {
-                interval.end = param.best.start - 1;
+            if (ctx.best.start > interval.start) {
+                interval.end = ctx.best.start - 1;
                 interval_stack_push(s, &interval);
             }
 
-            if (param.best.end < interval.end) {
-                interval.start = param.best.end + 1;
+            if (ctx.best.end < interval.end) {
+                interval.start = ctx.best.end + 1;
                 interval_stack_push(s, &interval);
             }
         }
     }
 
     interval_stack_free(s);
-    pqueue_free(param.in);
-    pthread_mutex_destroy(&param.best_mutex);
+    pqueue_free(ctx.in);
+    pthread_mutex_destroy(&ctx.best_mutex);
     prior_lookup_free(g_mode_lookup);
     prior_lookup_free(g_lookup);
     free(threads);
