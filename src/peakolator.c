@@ -466,6 +466,121 @@ void pqueue_finish(pqueue_t* q)
 }
 
 
+/* A lookup table for functions of the form idx_t -> double. */
+typedef struct prior_lookup_t_
+{
+    idx_t min, max;
+    double* xs;
+} prior_lookup_t;
+
+
+/* Create a lookup table from the given function.
+ *
+ * Args:
+ *   g: A prior function.
+ *   min: Minimum value the lookup table will be evaluated at.
+ *   max: Maximum value the lookup table will be evaluated at.
+ *
+ * Returns:
+ *   A lookup table.
+ */
+static prior_lookup_t* memoize_prior(prior_function_t g, idx_t min, idx_t max)
+{
+    prior_lookup_t* lookup =
+        malloc_or_die(sizeof(prior_lookup_t));
+    lookup->xs = malloc_or_die((max - min + 1) * sizeof(double));
+    lookup->min = min;
+    lookup->max = max;
+
+    idx_t i;
+    for (i = min; i <= max; ++i) {
+        lookup->xs[i] = g(i);
+    }
+
+    return lookup;
+}
+
+
+/* Build a lookup table for a prior functions mode.
+ *
+ * Specifically, for a given number l, we need to quickly compute the function
+ *     max g(k) for k <= l,
+ *
+ * Args:
+ *   g: A prior function.
+ *   min: Minimum value the lookup table will be evaluated at.
+ *   max: Maximum value the lookup table will be evaluated at.
+ *
+ * Returns:
+ *   A lookup table.
+ */
+static prior_lookup_t* memoize_prior_mode(prior_function_t g,
+                                                   idx_t min, idx_t max)
+{
+    prior_lookup_t* lookup =
+        malloc_or_die(sizeof(prior_lookup_t));
+    lookup->xs = malloc_or_die((max - min + 1) * sizeof(double));
+    lookup->min = min;
+    lookup->max = max;
+
+    double v, mode = -INFINITY;
+    idx_t i;
+    for (i = min; i <= max; ++i) {
+        v = g(i);
+        if (v > mode) mode = v;
+        lookup->xs[i - min] = mode;
+    }
+
+    return lookup;
+}
+
+
+/* Evaluate the function represented by a lookup table.
+ *
+ * Args:
+ *   lookup: Lookup table.
+ *   k: Value at which to evaluate the function.
+ *
+ * Returns:
+ *   The value of the function at k, or if k < k_min or k > k_max, -INFINITY.
+ */
+double prior_lookup_eval(const prior_lookup_t* lookup,
+                                  idx_t k)
+{
+    if (k < lookup->min || k > lookup->max) return -INFINITY;
+    else return lookup->xs[k - lookup->min];
+}
+
+
+/* Free a lookup table. */
+void prior_lookup_free(prior_lookup_t* lookup)
+{
+    free(lookup->xs);
+    free(lookup);
+}
+
+
+/* Compute an upper bound on the maximum density interval.
+ *
+ * Args:
+ *   f: Density function.
+ *   k_min: The smallest interval considered.
+ *   g_mode: A lookup table for prior function mode.
+ *   x: Total mass in the interval.
+ *   k: Length of the interval.
+ *
+ * Returns:
+ *   An upper bound density.
+ */
+double density_upper_bound(density_function_t f,
+                           idx_t k_min,
+                           const prior_lookup_t* g_mode,
+                           val_t x, idx_t k)
+{
+    return f(x, k_min) + prior_lookup_eval(g_mode, k);
+}
+
+
 /* Parameters passed to each peakolator thread. */
 typedef struct peakolator_thread_param_t_
 {
@@ -478,6 +593,14 @@ typedef struct peakolator_thread_param_t_
 
     /* Mutex for atomic access to "best". */
     pthread_mutex_t best_mutex;
+
+    /* Allowable lengths for highest-density intervals. */
+    idx_t k_min, k_max;
+
+    /* Lookup tables for the prior over interval length. */
+    prior_lookup_t* g_lookup;
+    prior_lookup_t* g_mode_lookup;
+
 } peakolator_thread_param_t;
 
 
@@ -486,6 +609,9 @@ static void* peakolator_thread(void* param_)
 {
     peakolator_thread_param_t* param = (peakolator_thread_param_t*) param_;
     interval_t interval;
+
+    val_t x;
+    idx_t k;
 
     while (pqueue_dequeue(param->in, &interval)) {
         /* TODO
@@ -498,21 +624,30 @@ static void* peakolator_thread(void* param_)
     return NULL;
 }
 
-
-void peakolate_async(const vector_t* vec,
+/* TODO: Describe what it is I'm doing here.
+ */
+void peakolate(const vector_t* vec,
                      density_function_t f,
                      prior_function_t g,
+                     idx_t k_min,
+                     idx_t k_max,
                      pqueue_t* out,
-                     int num_threads,
-                     pthread_cond_t* cond)
+                     int num_threads)
 {
     /* TODO: if num_threads <= 0 set it to be equal to the number of cores. */
 
     pthread_t* threads = malloc_or_die(num_threads * sizeof(pthread_t));
 
+    prior_lookup_t* g_lookup = memoize_prior(g, k_min, k_max);
+    prior_lookup_t* g_mode_lookup = memoize_prior_mode(g, k_min, k_max);
+
     peakolator_thread_param_t param;
     param.in = pqueue_create();
     pthread_mutex_init_or_die(&param.best_mutex, NULL);
+    param.k_min = k_min;
+    param.k_max = k_max;
+    param.g_lookup = g_lookup;
+    param.g_mode_lookup = g_mode_lookup;
 
     /* Queue of intervals left to search. */
     pqueue_t* q = pqueue_create();
@@ -526,8 +661,18 @@ void peakolate_async(const vector_t* vec,
     interval.end = vector_len(vec);
     pqueue_enqueue(q, &interval);
 
+    val_t x;
+    idx_t k;
+
     while (pqueue_dequeue(q, &interval)) {
-        /* TODO: place initial interval in param.in */
+        k = interval.end - interval.start + 1;
+        if (k < k_max) continue;
+
+        /* Enqueue the initial interval. */
+        x = vector_sum(vec, interval.start, interval.end);
+        interval.density = density_upper_bound(f, k_min, g_mode_lookup, x, k);
+        pqueue_enqueue(param.in, &interval);
+
         param.best.density = -INFINITY;
 
         int i;
@@ -543,11 +688,13 @@ void peakolate_async(const vector_t* vec,
             if (out) pqueue_enqueue(out, &param.best);
 
             if (param.best.start > interval.start) {
-                /* TODO: enqueue [interval.start, param.best.start - 1] */
+                interval.end = param.best.start - 1;
+                pqueue_enqueue(q, &interval);
             }
 
             if (param.best.end < interval.end) {
-                /* TODO: enqueue [param.best.end + 1, interval.end] */
+                interval.start = param.best.end + 1;
+                pqueue_enqueue(q, &interval);
             }
         }
     }
@@ -555,42 +702,9 @@ void peakolate_async(const vector_t* vec,
     pqueue_free(q);
     pqueue_free(param.in);
     pthread_mutex_destroy(&param.best_mutex);
+    prior_lookup_free(g_mode_lookup);
+    prior_lookup_free(g_lookup);
     free(threads);
-
-    /* On second thought, maybe we should just have a bool* and flip it when
-     * finished. Then the caller can just poll. */
-    if (cond) pthread_cond_broadcast(cond);
 }
-
-
-#if 0
-
-void peoklate(const vector_t* vec,
-              density_function_t f,
-              prior_function_t g)
-{
-    pqueue_t* out;
-    /* TODO: create */
-
-    /* TODO: Check the output of pthread functions. */
-    pthread_cond_t cond;
-    pthread_cond_init(&cond, NULL);
-
-    pthread_mutex_t mutex;
-    pthread_mutex_init(&mutex, NULL);
-    pthread_mutex_lock(&mutex);
-
-    peakolate_async(vec, f, g, out, &cond);
-
-    pthread_cond_wait(&cond, &mutex);
-
-    pthread_cond_destroy(&cond);
-    pthread_mutex_destroy(&mutex);
-
-    /* TODO: Return something. Dump `out`. */
-}
-
-#endif
-
 
 

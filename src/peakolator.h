@@ -156,16 +156,6 @@ typedef double (*prior_function_t)(idx_t);
 
 /* Repeatedly find high density intervals.
  *
- * TODO: Figure out what this should return.
- *
- */
-void peoklate(const vector_t* vec,
-              density_function_t f,
-              prior_function_t g);
-
-
-/* Repeatedly find high density intervals.
- *
  * Same as `peakolate` but returns immediately, running asynchonously and
  * placing output in the given priority queue. Upon completion in will broadcast
  * on the given condition, if one is given.
@@ -180,12 +170,13 @@ void peoklate(const vector_t* vec,
  *   cond: A condition on which peakolate will broadcast its completion. If
  *   NULL, it still run asynchronously but will not broadcast completion.
  */
-void peakolate_async(const vector_t* vec,
-                     density_function_t f,
-                     prior_function_t g,
-                     pqueue_t* out,
-                     int num_threads,
-                     pthread_cond_t* cond);
+void peakolate(const vector_t* vec,
+               density_function_t f,
+               prior_function_t g,
+               idx_t min_len,
+               idx_t max_len,
+               pqueue_t* out,
+               int num_threads);
 
 #endif
 
