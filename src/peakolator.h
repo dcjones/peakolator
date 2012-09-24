@@ -98,52 +98,34 @@ void sort_intervals_asc(interval_t* xs, size_t n);
 int interval_cmp(const interval_t* a, const interval_t* b);
 
 
-/* A priority queue for genomic intervals. */
-typedef struct pqueue_t_ pqueue_t;
+/* A bound on the start and end of an interval. */
+typedef struct interval_bound_t_
+{
+    /* Inclusive interval in which in which the start in bound. */
+    idx_t start_min, start_max;
+
+    /* Inclusive interval in which in which the end in bound. */
+    idx_t end_min, end_max;
+
+    /* An upper bound on the density of any interval within this bound. */
+    double density_max;
+
+    /* An upper bound on the mass of any interval within this bound. */
+    val_t x_max;
+} interval_bound_t;
 
 
-/* Create a new priority queue. */
-pqueue_t* pqueue_create();
-
-
-/* Free an priority queue created with pqueue_create. */
-void pqueue_free(pqueue_t*);
-
-
-/* Insert an item into the priority queue.
+/* Compare two interval bounds;
  *
  * Args:
- *   q: A pqueue.
- *   interval: Interval to enqueue.
- */
-void pqueue_enqueue(pqueue_t* q, const interval_t* interval);
-
-
-/* Pop the item with the largest density from the queue.
- *
- * If the queue is empty, this function will block until an item becomes
- * available, unless pqueue_finish has been called, in which case it will return
- * immediately.
- *
- * Args:
- *   q: A pqueue.
- *   interval: Location to copy popped interval.
+ *   a: An interval bound.
+ *   b: Another interval bound.
  *
  * Returns:
- *   false if the queue is finished and empty.
+ *   Returns 0 if the bounds are equal and non-zero otherwise.
+ *   (Hint: this is just a wrapper around memcmp.)
  */
-bool pqueue_dequeue(pqueue_t* q, interval_t* interval);
-
-
-/* Mark a queue as finished.
- *
- * After calling this no more items can be equeued and calls to pqueue_dequeue
- * will return immediately when the queue is empty.
- *
- * Args:
- *  q: A pqueue.
- */
-void pqueue_finish(pqueue_t* q);
+int interval_bound_cmp(const interval_bound_t* a, const interval_bound_t* b);
 
 
 /* A density function. */
@@ -167,15 +149,12 @@ typedef double (*prior_function_t)(idx_t);
  *   g: Prior on the length of intervals, or NULL for a flat prior.
  *   out: A priority queue on which intervals will be placed, or NULL to ignore
  *        output.
- *   cond: A condition on which peakolate will broadcast its completion. If
- *   NULL, it still run asynchronously but will not broadcast completion.
  */
 void peakolate(const vector_t* vec,
                density_function_t f,
                prior_function_t g,
                idx_t min_len,
                idx_t max_len,
-               pqueue_t* out,
                int num_threads);
 
 #endif

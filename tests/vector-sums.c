@@ -1,12 +1,12 @@
 
-/* Check 0that sums computed on sparse vectors are correct. A large random
+/* Check that sums computed on sparse vectors are correct. A large random
  * vector is generated "sparsified", and random sums are computed and checked.
  */
 
 #include <stdlib.h>
 #include <stdio.h>
 
-#include "../src/peakolator.h"
+#include "../src/peakolator.c"
 
 /* Probability a value is zero. This should be high so some actual compression
  * occurs. */

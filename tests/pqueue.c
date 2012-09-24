@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "../src/peakolator.h"
+#include "../src/peakolator.c"
 
 int main()
 {
@@ -13,23 +13,23 @@ int main()
     }
 
     size_t n = 100000;
-    interval_t* xs = malloc(n * sizeof(interval_t));
+    interval_bound_t* xs = malloc(n * sizeof(interval_bound_t));
     size_t i;
     for (i = 0; i < n; ++i) {
-        xs[i].density = (double) rand() / (double) RAND_MAX;
+        xs[i].density_max = (double) rand() / (double) RAND_MAX;
         pqueue_enqueue(q, &xs[i]);
     }
 
-    sort_intervals_asc(xs, n);
+    sort_interval_bounds_asc(xs, n);
 
-    interval_t x;
+    interval_bound_t x;
     for (i = 0; i < n; ++i) {
         if (!pqueue_dequeue(q, &x)) {
             fprintf(stderr, "Pqueue was prematurely empty.\n");
             return EXIT_FAILURE;
         }
 
-        if (interval_cmp(&xs[i], &x) != 0) {
+        if (memcmp(&xs[i], &x, sizeof(interval_bound_t)) != 0) {
             fprintf(stderr, "Pop number %zu was incorrect.\n", i);
             return EXIT_FAILURE;
         }
