@@ -893,10 +893,7 @@ static const uint64_t brute_cutoff = 10000;
 static void* peakolator_thread(void* ctx_)
 {
     peakolator_ctx_t* ctx= (peakolator_ctx_t*) ctx_;
-    interval_bound_t bound;
-
-    val_t x;
-    idx_t k;
+    interval_bound_t bound, subbound;
 
     while (pqueue_dequeue(ctx->in, &bound)) {
         uint64_t count = interval_bound_count(&bound, ctx->k_min, ctx->k_max);
@@ -911,19 +908,78 @@ static void* peakolator_thread(void* ctx_)
             continue;
         }
 
-        /* Cases:
+        /* The search space in partitioned into three or four subsets by
+         * bisecting the the start and end bounds and taking the cartesian
+         * product.
          *
-         * ##--  ##--
-         * ##--  --##
-         * --##  ##--
-         * --##  --##
-         */
-
-        /* TODO
-         * The algorithm proper.
+         * Schematically, this looks like so:
          *
+         *                Start Bound      End Bound
+         * Partition 1.   ######------     ------######
+         * Partition 2.   ######------     ######------
+         * Partition 3.   ------######     ------######
+         * Partition 4.   ------######     ######------
          *
+         * The fourth partition is ill-defined is not included when the start
+         * bound and end bound are the same (hence there being sometimes three
+         * partitions.).
          * */
+
+        idx_t start_bound_len = bound.start_max - bound.start_min + 1;
+        idx_t end_bound_len   = bound.end_max   - bound.end_min + 1;
+        idx_t start_mid = bound.start_min + start_bound_len / 2;
+        idx_t end_mid = bound.end_min + end_bound_len / 2;
+
+        val_t x_start0 = vector_sum(ctx->vec, bound.start_min, start_mid);
+        val_t x_start1 = vector_sum(ctx->vec, start_mid + 1, bound.start_max);
+        val_t x_end0   = vector_sum(ctx->vec, bound.end_min, end_mid);
+        val_t x_end1   = vector_sum(ctx->vec, end_mid + 1, bound.end_max);
+
+        /* Partition 1 */
+        subbound.start_min   = bound.start_min;
+        subbound.start_max   = start_mid;
+        subbound.end_min     = end_mid + 1;
+        subbound.end_max     = bound.end_max;
+        subbound.x_max       = x_start0 + x_end1;
+        subbound.density_max = density_upper_bound(
+                ctx->f, ctx->k_min, ctx->g_mode_lookup,
+                subbound.x_max, subbound.end_max - subbound.start_min + 1);
+        pqueue_enqueue(ctx->in, &subbound);
+
+        /* Partition 2 */
+        subbound.start_min   = bound.start_min;
+        subbound.start_max   = start_mid;
+        subbound.end_min     = bound.end_min;
+        subbound.end_max     = end_mid;
+        subbound.x_max       = x_start0 + x_end0;
+        subbound.density_max = density_upper_bound(
+                ctx->f, ctx->k_min, ctx->g_mode_lookup,
+                subbound.x_max, subbound.end_max - subbound.start_min + 1);
+        pqueue_enqueue(ctx->in, &subbound);
+
+        /* Partition 3 */
+        subbound.start_min   = start_mid + 1;
+        subbound.start_max   = bound.start_max;
+        subbound.end_min     = end_mid + 1;
+        subbound.end_max     = bound.end_max;
+        subbound.x_max       = x_start1 + x_end1;
+        subbound.density_max = density_upper_bound(
+                ctx->f, ctx->k_min, ctx->g_mode_lookup,
+                subbound.x_max, subbound.end_max - subbound.start_min + 1);
+        pqueue_enqueue(ctx->in, &subbound);
+
+        /* Partition 4 */
+        if (bound.end_min >= bound.start_max) {
+            subbound.start_min   = start_mid + 1;
+            subbound.start_max   = bound.start_max;
+            subbound.end_min     = bound.end_min;
+            subbound.end_max     = end_mid;
+            subbound.x_max       = x_start1 + x_end0;
+            subbound.density_max = density_upper_bound(
+                    ctx->f, ctx->k_min, ctx->g_mode_lookup,
+                    subbound.x_max, subbound.end_max - subbound.start_min + 1);
+            pqueue_enqueue(ctx->in, &subbound);
+        }
 
         pqueue_finish_one(ctx->in);
     }
