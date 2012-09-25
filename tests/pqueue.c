@@ -4,6 +4,26 @@
 
 #include "../src/peakolator.c"
 
+
+/* Comparison function for sorting interval bounds by ascending density_max */
+static int interval_bound_cmp_asc(const void* a_, const void* b_)
+{
+    const interval_bound_t* a = (interval_bound_t*) a_;
+    const interval_bound_t* b = (interval_bound_t*) b_;
+
+    if      (a->density_max == b->density_max) return  0;
+    else if (a->density_max <  b->density_max) return  1;
+    else                                       return -1;
+}
+
+
+/* Sort an array of interval bounds in ascending order by density_max. */
+static void sort_interval_bounds_asc(interval_bound_t* xs, size_t n)
+{
+    qsort(xs, n, sizeof(interval_bound_t), interval_bound_cmp_asc);
+}
+
+
 int main()
 {
     pqueue_t* q = pqueue_create();

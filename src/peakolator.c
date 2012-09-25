@@ -344,25 +344,50 @@ static uint64_t uint64_mul(uint64_t a, uint64_t b)
 static uint64_t subinterval_count(idx_t n_, idx_t k_min_, idx_t k_max_)
 {
     uint64_t n = n_;
-    uint64_t k_min = k_min_;
-    uint64_t k_max = k_max_;
+    uint64_t k_min = k_min_ < n_ ? k_min_ : n_;
+    uint64_t k_max = k_max_ < n_ ? k_max_ : n_;
 
-    if (n < k_min) return 0;
-    if (k_max < k_min) return 0;
-
-    uint64_t m = n < k_max ? n : k_max;
-
-    /* I won't insult you be pretenting this is obvious. It's pretty trikcy. */
-    uint64_t u = uint64_mul(n + 1, m - k_min + 1);
-    uint64_t v = uint64_sub(uint64_mul(m, m + 1), uint64_mul(k_min, k_min - 1));
-    return uint64_sub(u, v / 2);
+    uint64_t u = uint64_mul(n - k_max + 1, n - k_max + 2);
+    uint64_t v = uint64_mul(n - k_min, n - k_min + 1);
+    return (u - v) / 2;
 }
 
 
 /* Count the number of intervals contained within the bound. */
-static uint64_t interval_bound_count(const interval_bound_t* bound)
+static uint64_t interval_bound_count(const interval_bound_t* bound,
+                                     idx_t k_min, idx_t k_max)
 {
-    // TODO
+    /* Interval bounds in peakolator are always either equal or disjoint. */
+    if (bound->start_min == bound->end_min &&
+       bound->start_max == bound->end_max) {
+        return subinterval_count(bound->start_max - bound->end_max + 1,
+                                 k_min, k_max);
+    }
+    else if (bound->start_max < bound->end_min) {
+        /* total */
+        uint64_t t = subinterval_count(bound->end_max - bound->start_min + 1,
+                                       k_min, k_max);
+
+        /* left */
+        uint64_t l = subinterval_count((bound->end_min - 1) -
+                                       bound->start_min + 1,
+                                       k_min, k_max);
+
+        /* right */
+        uint64_t r = subinterval_count(bound->end_max -
+                                       (bound->start_max + 1) + 1,
+                                       k_min, k_max);
+        /* center */
+        uint64_t c = subinterval_count((bound->end_min - 1) -
+                                       (bound->start_max + 1) + 1,
+                                       k_min, k_max);
+
+        return uint64_sub(uint64_sub(uint64_add(t, c), l), r);
+    }
+    else {
+        /* It's not really zero, but it's tricky and we don't need to know. */
+        return 0;
+    }
 }
 
 
@@ -389,25 +414,6 @@ static void interval_bound_swap(interval_bound_t* a,
 static void interval_copy(interval_t* dest, const interval_t* src)
 {
     memcpy(dest, src, sizeof(interval_t));
-}
-
-
-/* Comparison function for sorting interval bounds by ascending density_max */
-static int interval_bound_cmp_asc(const void* a_, const void* b_)
-{
-    const interval_bound_t* a = (interval_bound_t*) a_;
-    const interval_bound_t* b = (interval_bound_t*) b_;
-
-    if      (a->density_max == b->density_max) return  0;
-    else if (a->density_max <  b->density_max) return  1;
-    else                                       return -1;
-}
-
-
-/* Sort an array of interval bounds in ascending order by density_max. */
-static void sort_interval_bounds_asc(interval_bound_t* xs, size_t n)
-{
-    qsort(xs, n, sizeof(interval_bound_t), interval_bound_cmp_asc);
 }
 
 
@@ -817,6 +823,9 @@ static double density_upper_bound(density_function_t f,
 /* Parameters passed to each peakolator thread. */
 typedef struct peakolator_ctx_t_
 {
+    /* Data. */
+    const vector_t* vec;
+
     /* Fragments left to search. */
     pqueue_t* in;
 
@@ -830,6 +839,9 @@ typedef struct peakolator_ctx_t_
     /* Allowable lengths for highest-density intervals. */
     idx_t k_min, k_max;
 
+    /* Density fuction. */
+    density_function_t f;
+
     /* Lookup tables for the prior over interval length. */
     prior_lookup_t* g_lookup;
     prior_lookup_t* g_mode_lookup;
@@ -838,9 +850,38 @@ typedef struct peakolator_ctx_t_
 
 
 /* Perform a brute-force search for the highest-density interval. */
-static void peakolator_brute(peakolator_ctx_t* ctx)
+static void peakolator_brute(peakolator_ctx_t* ctx,
+                             const interval_bound_t* bound)
 {
+    double best_density = ctx->best.density;
 
+    idx_t i, j;
+    for (i = bound->start_min; i <= bound->start_max; ++i) {
+        j = i + ctx->k_min - 1;
+        if (j < bound->end_min) j = bound->end_min;
+
+        idx_t j_max = i + ctx->k_max - 1;
+        if (j_max > bound->end_max) j_max = bound->end_max;
+
+        for (; j <= j_max; ++j) {
+            /* TODO: we could be more clever with counting, since we already
+             * know the sum of [i, j - 1]. */
+            val_t x = vector_sum(ctx->vec, i, j);
+            idx_t k = j - i + 1;
+            double density = ctx->f(x, k) + prior_lookup_eval(ctx->g_lookup, k);
+
+            if (density > best_density) {
+                pthread_mutex_lock(&ctx->best_mutex);
+                if (density > ctx->best.density) {
+                    ctx->best.start = i;
+                    ctx->best.end = j;
+                    ctx->best.density = density;
+                }
+                best_density = ctx->best.density;
+                pthread_mutex_unlock(&ctx->best_mutex);
+            }
+        }
+    }
 }
 
 
@@ -858,9 +899,25 @@ static void* peakolator_thread(void* ctx_)
     idx_t k;
 
     while (pqueue_dequeue(ctx->in, &bound)) {
-        /* Number of possible intervals.
-         * I recall that this is actually pretty tricky to compute. */
+        uint64_t count = interval_bound_count(&bound, ctx->k_min, ctx->k_max);
 
+        if (count == 0) {
+            pqueue_finish_one(ctx->in);
+            continue;
+        }
+        else if (count < brute_cutoff) {
+            peakolator_brute(ctx, &bound);
+            pqueue_finish_one(ctx->in);
+            continue;
+        }
+
+        /* Cases:
+         *
+         * ##--  ##--
+         * ##--  --##
+         * --##  ##--
+         * --##  --##
+         */
 
         /* TODO
          * The algorithm proper.
@@ -877,11 +934,11 @@ static void* peakolator_thread(void* ctx_)
 /* TODO: Describe what it is I'm doing here.
  */
 void peakolate(const vector_t* vec,
-                     density_function_t f,
-                     prior_function_t g,
-                     idx_t k_min,
-                     idx_t k_max,
-                     int num_threads)
+               density_function_t f,
+               prior_function_t g,
+               idx_t k_min,
+               idx_t k_max,
+               int num_threads)
 {
     /* TODO: if num_threads <= 0 set it to be equal to the number of cores. */
 
@@ -891,10 +948,12 @@ void peakolate(const vector_t* vec,
     prior_lookup_t* g_mode_lookup = memoize_prior_mode(g, k_min, k_max);
 
     peakolator_ctx_t ctx;
+    ctx.vec = vec;
     ctx.in = pqueue_create();
     pthread_mutex_init_or_die(&ctx.best_mutex, NULL);
     ctx.k_min = k_min;
     ctx.k_max = k_max;
+    ctx.f = f;
     ctx.g_lookup = g_lookup;
     ctx.g_mode_lookup = g_mode_lookup;
 
