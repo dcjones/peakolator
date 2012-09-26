@@ -151,7 +151,6 @@ vector_t* vector_create(const val_t* data, size_t n)
     }
 
     if (block_sum > 0) ++m;
-    ++m;
 
     /* Allocate */
     vec->n = n;
@@ -347,8 +346,12 @@ static uint64_t subinterval_count(idx_t n_, idx_t k_min_, idx_t k_max_)
     uint64_t k_min = k_min_ < n_ ? k_min_ : n_;
     uint64_t k_max = k_max_ < n_ ? k_max_ : n_;
 
-    uint64_t u = uint64_mul(n - k_max + 1, n - k_max + 2);
-    uint64_t v = uint64_mul(n - k_min, n - k_min + 1);
+    /* Two times number of intervals with length >= k_min. */
+    uint64_t u = uint64_mul(n - k_min - 1, n - k_min);
+
+    /* Two times number of intervals with length > k_max. */
+    uint64_t v = uint64_mul(n - k_max, n - k_max + 1);
+
     return (u - v) / 2;
 }
 
@@ -360,7 +363,7 @@ static uint64_t interval_bound_count(const interval_bound_t* bound,
     /* Interval bounds in peakolator are always either equal or disjoint. */
     if (bound->start_min == bound->end_min &&
        bound->start_max == bound->end_max) {
-        return subinterval_count(bound->start_max - bound->end_max + 1,
+        return subinterval_count(bound->end_max - bound->start_min + 1,
                                  k_min, k_max);
     }
     else if (bound->start_max < bound->end_min) {
@@ -786,8 +789,9 @@ static prior_lookup_t* memoize_prior_mode(prior_function_t g,
 static double prior_lookup_eval(const prior_lookup_t* lookup,
                                   idx_t k)
 {
-    if (k < lookup->min || k > lookup->max) return -INFINITY;
-    else return lookup->xs[k - lookup->min];
+    if (k < lookup->min) return -INFINITY;
+    else if (k > lookup->max) k = lookup->max;
+    return lookup->xs[k - lookup->min];
 }
 
 
@@ -864,8 +868,12 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
         if (j_max > bound->end_max) j_max = bound->end_max;
 
         for (; j <= j_max; ++j) {
-            /* TODO: we could be more clever with counting, since we already
-             * know the sum of [i, j - 1]. */
+            /* TODO:
+             * We could be more clever with counting, since we already
+             * know the sum of [i, j - 1].
+             *
+             * Actually, we really need to be. About 90% of the runtime is the
+             * line below. */
             val_t x = vector_sum(ctx->vec, i, j);
             idx_t k = j - i + 1;
             double density = ctx->f(x, k) + prior_lookup_eval(ctx->g_lookup, k);
@@ -886,7 +894,7 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
 
 
 /* Use brute-force search when there are fewer than this many intervals. */
-static const uint64_t brute_cutoff = 10000;
+static const uint64_t brute_cutoff = 1000;
 
 
 /* A single peakolator thread. */
@@ -925,6 +933,9 @@ static void* peakolator_thread(void* ctx_)
          * partitions.).
          * */
 
+        bool equal_bound = bound.start_min == bound.end_min &&
+                           bound.start_max == bound.end_max;
+
         idx_t start_bound_len = bound.start_max - bound.start_min + 1;
         idx_t end_bound_len   = bound.end_max   - bound.end_min + 1;
         idx_t start_mid = bound.start_min + start_bound_len / 2;
@@ -951,7 +962,7 @@ static void* peakolator_thread(void* ctx_)
         subbound.start_max   = start_mid;
         subbound.end_min     = bound.end_min;
         subbound.end_max     = end_mid;
-        subbound.x_max       = x_start0 + x_end0;
+        subbound.x_max       = equal_bound ? x_start0 : x_start0 + x_end0;
         subbound.density_max = density_upper_bound(
                 ctx->f, ctx->k_min, ctx->g_mode_lookup,
                 subbound.x_max, subbound.end_max - subbound.start_min + 1);
@@ -962,7 +973,7 @@ static void* peakolator_thread(void* ctx_)
         subbound.start_max   = bound.start_max;
         subbound.end_min     = end_mid + 1;
         subbound.end_max     = bound.end_max;
-        subbound.x_max       = x_start1 + x_end1;
+        subbound.x_max       = equal_bound ? x_start1 : x_start1 + x_end1;
         subbound.density_max = density_upper_bound(
                 ctx->f, ctx->k_min, ctx->g_mode_lookup,
                 subbound.x_max, subbound.end_max - subbound.start_min + 1);
@@ -1018,7 +1029,7 @@ void peakolate(const vector_t* vec,
 
     interval_t interval;
     interval.start = 0;
-    interval.end = vector_len(vec);
+    interval.end = vector_len(vec) - 1;
     interval_stack_push(s, &interval);
 
     interval_bound_t bound;
