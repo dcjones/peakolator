@@ -1,5 +1,5 @@
 
-SUBDIRS = src
+SUBDIRS = src tests examples
 
 EXTRA_DIST = README.md TODO.md
 

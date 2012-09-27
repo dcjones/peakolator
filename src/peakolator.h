@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 
-/* Zero compressed uint zectors. Peakolator scans across vectors cooresponding
+/* Zero compressed vectors. Peakolator scans across vectors cooresponding
  * to genomic sequences, with each position assigned a natural number.
  * */
 typedef struct vector_t_ vector_t;

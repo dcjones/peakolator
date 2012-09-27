@@ -1,5 +1,6 @@
 
 lib_LTLIBRARIES = libpeakolator.la
 
-libpeakolator_la_SOURCES = peakolator.h peakolator.c
+include_HEADERS = peakolator.h
+libpeakolator_la_SOURCES = peakolator.c
 

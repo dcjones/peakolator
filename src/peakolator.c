@@ -171,7 +171,6 @@ vector_t* vector_create(const val_t* data, size_t n)
     /* Initialize */
     size_t j; /* block index */
     size_t k; /* within block index */
-    vec->blocks[j].idx = 0;
     for (i = 0, j = 0, k = 0, block_sum = 0; i < n; ++i, ++k) {
         if (i > 0 && i % BLOCK_SIZE == 0) {
             if (block_sum > 0) {
