@@ -35,7 +35,7 @@ int main()
     free(xs);
 
     interval_t* out;
-    size_t count = peakolate(vec, f, g, 1, 10000, 8, &out);
+    size_t count = peakolate(vec, f, g, 1, 10000, 0, &out);
 
     if (count == 0) {
         fprintf(stderr, "No high density intervals were found.\n");

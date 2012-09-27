@@ -14,7 +14,7 @@ typedef struct vector_t_ vector_t;
 
 
 /* Vectors a sequence of values of type val_t, indexed with idx_t. */
-typedef uint32_t val_t;
+typedef double   val_t;
 typedef uint32_t idx_t;
 
 
@@ -128,6 +128,8 @@ typedef double (*prior_function_t)(idx_t);
  * highest-density interval is found. This process is repeated until no
  * intervals exist with f(x, k) + g(k) > -INFINITY.
  *
+ * Typically (but not necessarily), f and g return log-probalilities.
+ *
  * The function f must have the following properties:
  *   f(x', k) <= f(x, k) for all x' <= x
  *   f(x, k') <= f(x, k) for all k' >= k
@@ -143,7 +145,7 @@ typedef double (*prior_function_t)(idx_t);
  *   g: Prior on the length of intervals, or NULL for a flat prior.
  *   min_len: Minimum length of high-density intervals.
  *   max_len: Maximum length of high-density intervals.
- *   num_threads: Number of threads to use.
+ *   num_threads: Number of threads to use. If 0, use one thread per cpu core.
  *   out: A pointer to a pointer which will be set to an array holding the
  *        results of the clustering: high-density intervals in descending order
  *        of density.

@@ -4,11 +4,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "peakolator.h"
 
 
 /* Some helpful things to have. */
+
+
+/* Number of cpus. */
+unsigned int ncpus()
+{
+    /* TODO: This is the only thing in the codebase that is not entirely
+     * portable. We might want to at least give windows some love. */
+    return sysconf(_SC_NPROCESSORS_ONLN);
+}
 
 
 /* Malloc and exit on failure. */
@@ -1047,7 +1057,7 @@ size_t peakolate(const vector_t* vec,
                  unsigned int num_threads,
                  interval_t** out)
 {
-    /* TODO: if num_threads <= 0 set it to be equal to the number of cores. */
+    if (num_threads == 0) num_threads = ncpus();
 
     pthread_t* threads = malloc_or_die(num_threads * sizeof(pthread_t));
 

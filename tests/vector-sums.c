@@ -29,7 +29,7 @@ val_t randval()
         return 0;
     }
     else {
-        return rand() % max_val;
+        return (val_t) (rand() % (int) max_val);
     }
 }
 
@@ -86,7 +86,7 @@ int main()
         val_t sparse_sum = vector_sum(vec, u, v);
 
         if (true_sum != sparse_sum) {
-            fprintf(stderr, "Incorrect sum: %u != %u\n", sparse_sum, true_sum);
+            fprintf(stderr, "Incorrect sum.\n");
             return 1;
         }
     }
