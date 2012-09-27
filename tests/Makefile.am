@@ -1,5 +1,5 @@
 
-check_PROGRAMS = vector-sums pqueue needle
+check_PROGRAMS = vector-sums pqueue needle haystack prior
 
-TESTS = vector-sums pqueue needle
+TESTS = vector-sums pqueue needle haystack prior
 

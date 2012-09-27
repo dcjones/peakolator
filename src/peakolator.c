@@ -434,7 +434,19 @@ static void interval_swap(interval_t* a, interval_t* b)
 
 
 /* Comparison function for sorting intervals in asceding order. */
-static int interval_cmp_asc(const void* a_, const void* b_)
+static int interval_cmp_asc_density(const void* a_, const void* b_)
+{
+    const interval_t* a = (interval_t*) a_;
+    const interval_t* b = (interval_t*) b_;
+
+    if      (a->density == b->density) return 0;
+    else if (a->density <  b->density) return -1;
+    else                               return 1;
+}
+
+
+/* Comparison function for sorting intervals in asceding order. */
+static int interval_cmp_des_density(const void* a_, const void* b_)
 {
     const interval_t* a = (interval_t*) a_;
     const interval_t* b = (interval_t*) b_;
@@ -445,10 +457,17 @@ static int interval_cmp_asc(const void* a_, const void* b_)
 }
 
 
-/* Sort an array of interval in descending order. */
-void sort_intervals_asc(interval_t* xs, size_t n)
+/* Sort an array of intervals by density in ascending order. */
+void sort_intervals_asc_density(interval_t* xs, size_t n)
 {
-    qsort(xs, n, sizeof(interval_t), interval_cmp_asc);
+    qsort(xs, n, sizeof(interval_t), interval_cmp_asc_density);
+}
+
+
+/* Sort an array of intervals by density in descending order. */
+void sort_intervals_des_density(interval_t* xs, size_t n)
+{
+    qsort(xs, n, sizeof(interval_t), interval_cmp_des_density);
 }
 
 
@@ -729,15 +748,14 @@ typedef struct prior_lookup_t_
  */
 static prior_lookup_t* memoize_prior(prior_function_t g, idx_t min, idx_t max)
 {
-    prior_lookup_t* lookup =
-        malloc_or_die(sizeof(prior_lookup_t));
+    prior_lookup_t* lookup = malloc_or_die(sizeof(prior_lookup_t));
     lookup->xs = malloc_or_die((max - min + 1) * sizeof(double));
     lookup->min = min;
     lookup->max = max;
 
     idx_t i;
     for (i = min; i <= max; ++i) {
-        lookup->xs[i] = g(i);
+        lookup->xs[i - min] = g(i);
     }
 
     return lookup;
@@ -758,10 +776,9 @@ static prior_lookup_t* memoize_prior(prior_function_t g, idx_t min, idx_t max)
  *   A lookup table.
  */
 static prior_lookup_t* memoize_prior_mode(prior_function_t g,
-                                                   idx_t min, idx_t max)
+                                          idx_t min, idx_t max)
 {
-    prior_lookup_t* lookup =
-        malloc_or_die(sizeof(prior_lookup_t));
+    prior_lookup_t* lookup = malloc_or_die(sizeof(prior_lookup_t));
     lookup->xs = malloc_or_die((max - min + 1) * sizeof(double));
     lookup->min = min;
     lookup->max = max;
@@ -904,13 +921,23 @@ static void* peakolator_thread(void* ctx_)
     peakolator_ctx_t* ctx= (peakolator_ctx_t*) ctx_;
     interval_bound_t bound, subbound;
 
+
     while (pqueue_dequeue(ctx->in, &bound)) {
+        /* Throw out subsets of the search space that could not possibly hold
+         * the high density interval. */
+        if (bound.density_max <= ctx->best.density) {
+            pqueue_finish_one(ctx->in);
+            continue;
+        }
+
         uint64_t count = interval_bound_count(&bound, ctx->k_min, ctx->k_max);
 
         if (count == 0) {
             pqueue_finish_one(ctx->in);
             continue;
         }
+        /* Resort to a brute force search when the bound contains relatively few
+         * intervals. */
         else if (count < brute_cutoff) {
             peakolator_brute(ctx, &bound);
             pqueue_finish_one(ctx->in);
@@ -924,10 +951,10 @@ static void* peakolator_thread(void* ctx_)
          * Schematically, this looks like so:
          *
          *                Start Bound      End Bound
-         * Partition 1.   ######------     ------######
-         * Partition 2.   ######------     ######------
-         * Partition 3.   ------######     ------######
-         * Partition 4.   ------######     ######------
+         * Partition 1.   XXXXXX------     ------XXXXXX
+         * Partition 2.   XXXXXX------     XXXXXX------
+         * Partition 3.   ------XXXXXX     ------XXXXXX
+         * Partition 4.   ------XXXXXX     XXXXXX------
          *
          * The fourth partition is ill-defined is not included when the start
          * bound and end bound are the same (hence there being sometimes three
@@ -999,14 +1026,25 @@ static void* peakolator_thread(void* ctx_)
     return NULL;
 }
 
-/* TODO: Describe what it is I'm doing here.
+
+/* The peakolator algorithm.
+ *
+ * The core the peakolator algorithm is actually embarrassingly simple and
+ * included mostly in `peakolator_thread`. All this code is a lot of fuss around
+ * making it run efficiently in parallel. This function launches `num_threads`
+ * threads which all share one priority queue. The priority queue holds interval
+ * bounds (subsets of the search space) in order of maximum density.
+ *
+ * Each thread dequeues a bound, and either does a brute force search (if the
+ * bound is small) or further partitions the bound into subbounds and enqueues
+ * these subounds back on the priority queue.
  */
 size_t peakolate(const vector_t* vec,
                  density_function_t f,
                  prior_function_t g,
                  idx_t k_min,
                  idx_t k_max,
-                 int num_threads,
+                 unsigned int num_threads,
                  interval_t** out)
 {
     /* TODO: if num_threads <= 0 set it to be equal to the number of cores. */
@@ -1042,7 +1080,7 @@ size_t peakolate(const vector_t* vec,
 
     while (interval_stack_pop(s, &interval)) {
         k = interval.end - interval.start + 1;
-        if (k < k_max) continue;
+        if (k < k_min) continue;
 
         /* Enqueue the initial interval bound. */
         bound.start_min = bound.end_min = interval.start;
@@ -1055,7 +1093,7 @@ size_t peakolate(const vector_t* vec,
         ctx.best.density = -INFINITY;
 
         /* Start up a bunch of search threads. */
-        int i;
+        unsigned int i;
         for (i = 0; i < num_threads; ++i) {
             pthread_create(&threads[i], NULL, peakolator_thread, &ctx);
         }
@@ -1082,6 +1120,7 @@ size_t peakolate(const vector_t* vec,
 
     *out = malloc_or_die(found->n * sizeof(interval_t));
     memcpy(*out, found->xs, found->n * sizeof(interval_t));
+    sort_intervals_des_density(*out, found->n);
     size_t out_len = found->n;
     interval_stack_free(found);
     interval_stack_free(s);

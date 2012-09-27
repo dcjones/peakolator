@@ -81,8 +81,22 @@ typedef struct interval_t_
 } interval_t;
 
 
-/* Sort an array of interval in ascending order. */
-void sort_intervals_asc(interval_t* xs, size_t n);
+/* Sort an array of interval in ascending order of density.
+ *
+ * Args:
+ *   xs: An array of intervals.
+ *   n: Number of intervals in xs.
+ * */
+void sort_intervals_asc_density(interval_t* xs, size_t n);
+
+
+/* Sort an array of interval in descending order of density.
+ *
+ * Args:
+ *   xs: An array of intervals.
+ *   n: Number of intervals in xs.
+ * */
+void sort_intervals_des_density(interval_t* xs, size_t n);
 
 
 /* Compare two intervals.
@@ -106,19 +120,33 @@ typedef double (*density_function_t)(val_t, idx_t);
 typedef double (*prior_function_t)(idx_t);
 
 
-/* Repeatedly find high density intervals.
+/* Run the peakolator algorithm, performing greedly one-dimensional clustering.
  *
- * Same as `peakolate` but returns immediately, running asynchonously and
- * placing output in the given priority queue. Upon completion in will broadcast
- * on the given condition, if one is given.
+ * The algorithm will repeatedly find the interval [i, j] in vec that maximized
+ * f(x, k) + g(k), where x = vec[i] + ... + vec[j] and k = j - i + 1. This
+ * higest-density interval is then subtracted from the search space and a new
+ * highest-density interval is found. This process is repeated until no
+ * intervals exist with f(x, k) + g(k) > -INFINITY.
+ *
+ * The function f must have the following properties:
+ *   f(x', k) <= f(x, k) for all x' <= x
+ *   f(x, k') <= f(x, k) for all k' >= k
+ *
+ * If there properties are not met, the algorithm will still run, but cannot
+ * guaranteed to return an actual greedy clustering. (The highest-density
+ * interval found at each step may be suboptimal.)
  *
  * Args:
  *   vec: Data to segment.
  *   f: Density function. (Behavior is undefined if this function is not a
  *      proper density function.)
  *   g: Prior on the length of intervals, or NULL for a flat prior.
- *   out: A priority queue on which intervals will be placed, or NULL to ignore
- *        output.
+ *   min_len: Minimum length of high-density intervals.
+ *   max_len: Maximum length of high-density intervals.
+ *   num_threads: Number of threads to use.
+ *   out: A pointer to a pointer which will be set to an array holding the
+ *        results of the clustering: high-density intervals in descending order
+ *        of density.
  *
  * Returns:
  *   The number of high density intervals found.
@@ -128,10 +156,8 @@ size_t peakolate(const vector_t* vec,
                  prior_function_t g,
                  idx_t min_len,
                  idx_t max_len,
-                 int num_threads,
+                 unsigned int num_threads,
                  interval_t** out);
 
-
 #endif
-
 
