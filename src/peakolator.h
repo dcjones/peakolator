@@ -119,13 +119,18 @@ typedef double (*prior_function_t)(idx_t);
  *   g: Prior on the length of intervals, or NULL for a flat prior.
  *   out: A priority queue on which intervals will be placed, or NULL to ignore
  *        output.
+ *
+ * Returns:
+ *   The number of high density intervals found.
  */
-void peakolate(const vector_t* vec,
-               density_function_t f,
-               prior_function_t g,
-               idx_t min_len,
-               idx_t max_len,
-               int num_threads);
+size_t peakolate(const vector_t* vec,
+                 density_function_t f,
+                 prior_function_t g,
+                 idx_t min_len,
+                 idx_t max_len,
+                 int num_threads,
+                 interval_t** out);
+
 
 #endif
 

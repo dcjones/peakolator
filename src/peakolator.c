@@ -167,6 +167,7 @@ vector_t* vector_create(const val_t* data, size_t n)
             if (block_sum > 0) {
                 vec->blocks[j].sum = block_sum;
                 ++j;
+                if (j >= m) break;
             }
 
             vec->blocks[j].idx = i;
@@ -1000,12 +1001,13 @@ static void* peakolator_thread(void* ctx_)
 
 /* TODO: Describe what it is I'm doing here.
  */
-void peakolate(const vector_t* vec,
-               density_function_t f,
-               prior_function_t g,
-               idx_t k_min,
-               idx_t k_max,
-               int num_threads)
+size_t peakolate(const vector_t* vec,
+                 density_function_t f,
+                 prior_function_t g,
+                 idx_t k_min,
+                 idx_t k_max,
+                 int num_threads,
+                 interval_t** out)
 {
     /* TODO: if num_threads <= 0 set it to be equal to the number of cores. */
 
@@ -1024,8 +1026,11 @@ void peakolate(const vector_t* vec,
     ctx.g_lookup = g_lookup;
     ctx.g_mode_lookup = g_mode_lookup;
 
-    /* Queue of intervals left to search. */
+    /* Stack of intervals left to search. */
     interval_stack_t* s = interval_stack_create();
+
+    /* Stack of high-density intervals found. */
+    interval_stack_t* found = interval_stack_create();
 
     interval_t interval;
     interval.start = 0;
@@ -1061,8 +1066,7 @@ void peakolate(const vector_t* vec,
 
         /* Find anything good? */
         if (ctx.best.density != -INFINITY) {
-            /* TODO: Do something with ctx.best when we figure
-             * out what this function returs.. */
+            interval_stack_push(found, &ctx.best);
 
             if (ctx.best.start > interval.start) {
                 interval.end = ctx.best.start - 1;
@@ -1076,12 +1080,18 @@ void peakolate(const vector_t* vec,
         }
     }
 
+    *out = malloc_or_die(found->n * sizeof(interval_t));
+    memcpy(*out, found->xs, found->n * sizeof(interval_t));
+    size_t out_len = found->n;
+    interval_stack_free(found);
     interval_stack_free(s);
     pqueue_free(ctx.in);
     pthread_mutex_destroy(&ctx.best_mutex);
     prior_lookup_free(g_mode_lookup);
     prior_lookup_free(g_lookup);
     free(threads);
+
+    return out_len;
 }
 
 
