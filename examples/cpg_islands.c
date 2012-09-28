@@ -1,9 +1,54 @@
 
 #include <ctype.h>
 #include <getopt.h>
+#include <math.h>
 
 #include "common.h"
 #include "../src/peakolator.h"
+
+
+static idx_t min_length  = 100;
+static idx_t max_length  = 100000;
+static double mean_length = 1000;
+static double std_length  = 500;
+static double fore_log_p, fore_log_q, back_log_p, back_log_q;
+
+
+static double logaddexp(double x, double y)
+{
+    double u = x - y;
+    if (u > 0.0) {
+        return x + log1p(exp(-u));
+    }else if (u <= 0.0) {
+        return y + log1p(exp(u));
+    }else  {
+        return x + y;
+    }
+}
+
+
+double f(val_t x_, idx_t k_)
+{
+    double x = (double) x_;
+    double k = (double) k_;
+
+    if (x > k) x = k;
+
+    /* These are binomial distribution propabilities, but witohut the binomial
+     * coefficient term, since that drops out of the posterior probality. */
+    double u = x * fore_log_p + (k - x) * fore_log_q;
+    double v = x * back_log_p + (k - x) * back_log_q;
+
+    /* TODO: prior */
+    return u - logaddexp(u, v);
+}
+
+
+double g(__attribute__((unused)) idx_t k)
+{
+    /* TODO */
+    return 0;
+}
 
 
 void print_usage(FILE* file)
@@ -30,11 +75,6 @@ int main(int argc, char* argv[])
         {NULL, 0, NULL, 0}
     };
 
-
-    idx_t min_length  = 100;
-    idx_t max_length  = 100000;
-    double mean_length = 1000;
-    double std_length  = 500;
 
     int opt, opt_idx;
     while (true) {
@@ -90,8 +130,14 @@ int main(int argc, char* argv[])
         count += n - 1;
     }
     double cg_pr = (double) cg_count / (double) count;
-
     fprintf(stderr, "background CG probability: %0.4f\n", cg_pr);
+
+    back_log_p = log(cg_pr);
+    back_log_q = log(1.0 - cg_pr);
+
+    cg_pr = fmin(10.0 * cg_pr, 1.0);
+    fore_log_p = log(cg_pr);
+    fore_log_q = log(1.0 - cg_pr);
 
     /* Allocate a vector. */
     size_t xs_size = 0;
@@ -120,7 +166,12 @@ int main(int argc, char* argv[])
 
         vector_t* vec = vector_create(xs, n);
 
-        /* TODO: peakolate */
+        interval_t* out;
+        size_t out_count = peakolate(vec, f, g,
+                                     min_length, max_length,
+                                     0, &out);
+
+        fprintf(stderr, "%zu islands found.\n", out_count);
 
         vector_free(vec);
     }

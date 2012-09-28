@@ -691,9 +691,6 @@ typedef struct pqueue_t_
 
     /* Number of pending items. */
     size_t pending;
-
-    /* Mutex to increment/decrement pending. */
-    pthread_mutex_t pending_mutex;
 } pqueue_t;
 
 
@@ -718,10 +715,9 @@ static pqueue_t* pqueue_create(size_t k)
     }
 
     q->N = 0;
-    pthread_mutex_init_or_die(&q->N_mutex, NULL);
-
     q->pending = 0;
-    pthread_mutex_init_or_die(&q->pending_mutex, NULL);
+
+    pthread_mutex_init_or_die(&q->N_mutex, NULL);
 
     return q;
 }
@@ -738,7 +734,6 @@ static void pqueue_free(pqueue_t* q)
     }
 
     pthread_mutex_destroy(&q->N_mutex);
-    pthread_mutex_destroy(&q->pending_mutex);
     free(q->mutexes);
     free(q->conds);
     free(q->ns);
@@ -854,11 +849,8 @@ static bool pqueue_dequeue(pqueue_t* q, size_t h, interval_bound_t* bound)
     pthread_mutex_lock(&q->N_mutex);
     assert(q->N > 0);
     --q->N;
-    pthread_mutex_unlock(&q->N_mutex);
-
-    pthread_mutex_lock(&q->pending_mutex);
     ++q->pending;
-    pthread_mutex_unlock(&q->pending_mutex);
+    pthread_mutex_unlock(&q->N_mutex);
 
     pthread_mutex_unlock(&q->mutexes[h]);
     return true;
@@ -880,10 +872,10 @@ static bool pqueue_dequeue(pqueue_t* q, size_t h, interval_bound_t* bound)
  */
 static void pqueue_finish_one(pqueue_t* q)
 {
-    pthread_mutex_lock(&q->pending_mutex);
+    pthread_mutex_lock(&q->N_mutex);
     assert(q->pending > 0);
     --q->pending;
-    pthread_mutex_unlock(&q->pending_mutex);
+    pthread_mutex_unlock(&q->N_mutex);
 
     // In case anyone is waiting on an item that will never arrive.
     size_t i;
