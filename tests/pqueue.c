@@ -1,4 +1,6 @@
 
+/* Test a priority queue with only one heap. */
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -26,7 +28,7 @@ static void sort_interval_bounds_asc(interval_bound_t* xs, size_t n)
 
 int main()
 {
-    pqueue_t* q = pqueue_create();
+    pqueue_t* q = pqueue_create(1);
     if (q == NULL) {
         fprintf(stderr, "Failed to create a pqueue.\n");
         return EXIT_FAILURE;
@@ -37,14 +39,14 @@ int main()
     size_t i;
     for (i = 0; i < n; ++i) {
         xs[i].density_max = (double) rand() / (double) RAND_MAX;
-        pqueue_enqueue(q, &xs[i]);
+        pqueue_enqueue(q, 0, &xs[i]);
     }
 
     sort_interval_bounds_asc(xs, n);
 
     interval_bound_t x;
     for (i = 0; i < n; ++i) {
-        if (!pqueue_dequeue(q, &x)) {
+        if (!pqueue_dequeue(q, 0, &x)) {
             fprintf(stderr, "Pqueue was prematurely empty.\n");
             return EXIT_FAILURE;
         }

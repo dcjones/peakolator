@@ -67,6 +67,83 @@ void pthread_cond_init_or_die(pthread_cond_t* cond,
 }
 
 
+/* This is MurmurHash3. The original C++ code was placed in the public domain
+ * by its author, Austin Appleby. */
+
+static inline uint32_t fmix(uint32_t h)
+{
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+
+    return h;
+}
+
+
+static inline uint32_t rotl32(uint32_t x, int8_t r)
+{
+    return (x << r) | (x >> (32 - r));
+}
+
+
+static uint32_t murmurhash3(const uint8_t* data, size_t len_)
+{
+    const int len = (int) len_;
+    const int nblocks = len / 4;
+
+    uint32_t h1 = 0xc062fb4a;
+
+    uint32_t c1 = 0xcc9e2d51;
+    uint32_t c2 = 0x1b873593;
+
+    //----------
+    // body
+
+    const uint32_t * blocks = (const uint32_t*) (data + nblocks * 4);
+
+    int i;
+    for(i = -nblocks; i; i++)
+    {
+        uint32_t k1 = blocks[i];
+
+        k1 *= c1;
+        k1 = rotl32(k1, 15);
+        k1 *= c2;
+
+        h1 ^= k1;
+        h1 = rotl32(h1, 13);
+        h1 = h1*5+0xe6546b64;
+    }
+
+    //----------
+    // tail
+
+    const uint8_t * tail = (const uint8_t*)(data + nblocks*4);
+
+    uint32_t k1 = 0;
+
+    switch(len & 3)
+    {
+        case 3: k1 ^= tail[2] << 16;
+        case 2: k1 ^= tail[1] << 8;
+        case 1: k1 ^= tail[0];
+              k1 *= c1; k1 = rotl32(k1,15); k1 *= c2; h1 ^= k1;
+    }
+
+    //----------
+    // finalization
+
+    h1 ^= len;
+
+    h1 = fmix(h1);
+
+    return h1;
+}
+
+
+
 /* Sparse vectors */
 
 
@@ -188,7 +265,7 @@ vector_t* vector_create(const val_t* data, size_t n)
         block_sum += data[i];
     }
 
-    if (block_sum > 0) {
+    if (j < m && block_sum > 0) {
         vec->blocks[j].sum = block_sum;
     }
 
@@ -317,6 +394,20 @@ typedef struct interval_bound_t_
  *   (Hint: this is just a wrapper around memcmp.)
  */
 int interval_bound_cmp(const interval_bound_t* a, const interval_bound_t* b);
+
+
+/* Hash an interval bound.
+ *
+ * Args:
+ *   b: An interval bound.
+ *
+ * Returns:
+ *   A hash of the bound (ignoring density_max, and x_max).
+ */
+static uint32_t interval_bound_hash(const interval_bound_t* b)
+{
+    return murmurhash3((uint8_t*) b, 4 * sizeof(idx_t));
+}
 
 
 /* Arithmetic with uint64_t that bottoms out rather than overflows. */
@@ -569,40 +660,69 @@ static bool interval_stack_pop(interval_stack_t* s, interval_t* interval)
 
 /* A concurrent priority queue for genomic intervals.
  *
- * This is just a coarsely locked binary max-heap, nothing fancy.
+ * This is a partitioned priority queue. To reduce contention, there are k
+ * independent queues each with their own lock.
  */
 typedef struct pqueue_t_
 {
-    /* Coarse lock. */
-    pthread_mutex_t mutex;
+    /* Number of queues. */
+    size_t k;
+
+    /* Coarse lock for each heap. */
+    pthread_mutex_t* mutexes;
 
     /* Signal waiters that an item is available. */
-    pthread_cond_t cond;
+    pthread_cond_t* conds;
 
     /* Number of items in the heap. */
-    size_t n;
+    size_t* ns;
 
     /* Size reserved. */
-   size_t size;
+   size_t* sizes;
 
     /* Items. */
-    interval_bound_t* xs;
+    interval_bound_t** xss;
+
+    /* Total number of items in the priority queue. */
+    size_t N;
+
+    /* Mutex to increment/decrement N. */
+    pthread_mutex_t N_mutex;
 
     /* Number of pending items. */
     size_t pending;
+
+    /* Mutex to increment/decrement pending. */
+    pthread_mutex_t pending_mutex;
 } pqueue_t;
 
 
 /* Create a new priority queue. */
-static pqueue_t* pqueue_create()
+static pqueue_t* pqueue_create(size_t k)
 {
     pqueue_t* q = malloc_or_die(sizeof(pqueue_t));
-    q->n = 0;
-    q->size = 1024;
-    q->xs = malloc_or_die(q->size * sizeof(interval_bound_t));
+    q->k = k;
+    q->mutexes = malloc_or_die(k * sizeof(pthread_mutex_t));
+    q->conds   = malloc_or_die(k * sizeof(pthread_cond_t));
+    q->ns      = malloc_or_die(k * sizeof(size_t));
+    q->sizes   = malloc_or_die(k * sizeof(size_t));
+    q->xss     = malloc_or_die(k * sizeof(interval_bound_t*));
+
+    size_t i;
+    for (i = 0; i < k; ++i) {
+        pthread_mutex_init_or_die(&q->mutexes[i], NULL);
+        pthread_cond_init_or_die(&q->conds[i], NULL);
+        q->ns[i] = 0;
+        q->sizes[i] = 1024;
+        q->xss[i] = malloc_or_die(q->sizes[i] * sizeof(interval_bound_t));
+    }
+
+    q->N = 0;
+    pthread_mutex_init_or_die(&q->N_mutex, NULL);
+
     q->pending = 0;
-    pthread_mutex_init_or_die(&q->mutex, NULL);
-    pthread_cond_init_or_die(&q->cond, NULL);
+    pthread_mutex_init_or_die(&q->pending_mutex, NULL);
+
     return q;
 }
 
@@ -610,18 +730,30 @@ static pqueue_t* pqueue_create()
 /* Free an priority queue created with pqueue_create. */
 static void pqueue_free(pqueue_t* q)
 {
-    pthread_mutex_destroy(&q->mutex);
-    pthread_cond_destroy(&q->cond);
-    free(q->xs);
+    size_t i;
+    for (i = 0; i < q->k; ++i) {
+        pthread_mutex_destroy(&q->mutexes[i]);
+        pthread_cond_destroy(&q->conds[i]);
+        free(q->xss[i]);
+    }
+
+    pthread_mutex_destroy(&q->N_mutex);
+    pthread_mutex_destroy(&q->pending_mutex);
+    free(q->mutexes);
+    free(q->conds);
+    free(q->ns);
+    free(q->sizes);
+    free(q->xss);
     free(q);
 }
 
 
-/* Double the size reserved for a heap. */
-static void pqueue_expand(pqueue_t* q)
+/* Double the size reserved for heap i. */
+static void pqueue_expand(pqueue_t* q, size_t i)
 {
-    q->size *= 2;
-    q->xs = realloc_or_die(q->xs, q->size * sizeof(interval_bound_t));
+    q->sizes[i] *= 2;
+    q->xss[i] = realloc_or_die(q->xss[i],
+                               q->sizes[i] * sizeof(interval_bound_t));
 }
 
 
@@ -631,33 +763,39 @@ static inline size_t pqueue_left_idx   (size_t i) { return 2 * i + 1; }
 static inline size_t pqueue_right_idx  (size_t i) { return 2 * i + 2; }
 
 
-/* Insert an item into the priority queue.
+/* Insert an item into the priority queue in heap number i.
  *
  * Args:
+ *   h: Heap number.
  *   q: A pqueue.
  *   interval: Interval to enqueue.
  */
-static void pqueue_enqueue(pqueue_t* q, const interval_bound_t* bound)
+static void pqueue_enqueue(pqueue_t* q, size_t h, const interval_bound_t* bound)
 {
-    pthread_mutex_lock(&q->mutex);
+    pthread_mutex_lock(&q->mutexes[h]);
 
     /* insert */
-    if (q->n == q->size) pqueue_expand(q);
-    size_t j, i = q->n++;
-    interval_bound_copy(&q->xs[i], bound);
+    if (q->ns[h] == q->sizes[h]) pqueue_expand(q, h);
+
+    size_t j, i = q->ns[h]++;
+    interval_bound_copy(&q->xss[h][i], bound);
+
+    pthread_mutex_lock(&q->N_mutex);
+    ++q->N;
+    pthread_mutex_unlock(&q->N_mutex);
 
     /* percolate up */
     while (i > 0) {
         j = pqueue_parent_idx(i);
-        if (q->xs[j].density_max < q->xs[i].density_max) {
-            interval_bound_swap(&q->xs[i], &q->xs[j]);
+        if (q->xss[h][j].density_max < q->xss[h][i].density_max) {
+            interval_bound_swap(&q->xss[h][i], &q->xss[h][j]);
             i = j;
         }
         else break;
     }
 
-    pthread_mutex_unlock(&q->mutex);
-    pthread_cond_signal(&q->cond);
+    pthread_mutex_unlock(&q->mutexes[h]);
+    pthread_cond_signal(&q->conds[h]);
 }
 
 
@@ -668,29 +806,32 @@ static void pqueue_enqueue(pqueue_t* q, const interval_bound_t* bound)
  * immediately.
  *
  * Args:
+ *   h: Heap number.
  *   q: A pqueue.
  *   interval: Location to copy popped interval.
  *
  * Returns:
  *   false if the queue is finished and empty.
  */
-static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
+static bool pqueue_dequeue(pqueue_t* q, size_t h, interval_bound_t* bound)
 {
-    pthread_mutex_lock(&q->mutex);
+    pthread_mutex_lock(&q->mutexes[h]);
 
-    while (q->n == 0 && q->pending > 0) {
-        pthread_cond_wait(&q->cond, &q->mutex);
+    while (q->ns[h] == 0 && q->N + q->pending > 0) {
+        pthread_cond_wait(&q->conds[h], &q->mutexes[h]);
     }
 
-    if (q->n == 0 && q->pending == 0) {
-        pthread_mutex_unlock(&q->mutex);
+    if (q->ns[h] == 0) {
+        pthread_mutex_unlock(&q->mutexes[h]);
         return false;
     }
 
-    interval_bound_copy(bound, &q->xs[0]);
+    interval_bound_t* xs = q->xss[h];
+
+    interval_bound_copy(bound, &xs[0]);
 
     /* replace head */
-    interval_bound_copy(&q->xs[0], &q->xs[--q->n]);
+    interval_bound_copy(&xs[0], &xs[--q->ns[h]]);
 
     /* percolate down */
     size_t l, r, j, i = 0;
@@ -698,11 +839,11 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
         l = pqueue_left_idx(i);
         r = pqueue_right_idx(i);
 
-        if (l < q->n) {
-            j = r < q->n && q->xs[r].density_max > q->xs[l].density_max ? r : l;
+        if (l < q->ns[h]) {
+            j = r < q->ns[h] && xs[r].density_max > xs[l].density_max ? r : l;
 
-            if (q->xs[j].density_max > q->xs[i].density_max) {
-                interval_bound_swap(&q->xs[j], &q->xs[i]);
+            if (xs[j].density_max > xs[i].density_max) {
+                interval_bound_swap(&xs[j], &xs[i]);
                 i = j;
             }
             else break;
@@ -710,8 +851,16 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
         else break;
     }
 
+    pthread_mutex_lock(&q->N_mutex);
+    assert(q->N > 0);
+    --q->N;
+    pthread_mutex_unlock(&q->N_mutex);
+
+    pthread_mutex_lock(&q->pending_mutex);
     ++q->pending;
-    pthread_mutex_unlock(&q->mutex);
+    pthread_mutex_unlock(&q->pending_mutex);
+
+    pthread_mutex_unlock(&q->mutexes[h]);
     return true;
 }
 
@@ -723,17 +872,24 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
  * this function at a point where it will not enqueue any more without first
  * dequeuing.
  *
+ * Calling this more times than dequeue has been called will result in very bad
+ * things (e.g. deadlocks, most likely).
+ *
  * Args:
  *  q: A pqueue.
  */
 static void pqueue_finish_one(pqueue_t* q)
 {
-    pthread_mutex_lock(&q->mutex);
-    if (q->pending > 0) --q->pending;
-    pthread_mutex_unlock(&q->mutex);
+    pthread_mutex_lock(&q->pending_mutex);
+    assert(q->pending > 0);
+    --q->pending;
+    pthread_mutex_unlock(&q->pending_mutex);
 
     // In case anyone is waiting on an item that will never arrive.
-    pthread_cond_broadcast(&q->cond);
+    size_t i;
+    for (i = 0; i < q->k; ++i) {
+        pthread_cond_broadcast(&q->conds[i]);
+    }
 }
 
 
@@ -857,15 +1013,21 @@ typedef struct peakolator_ctx_t_
     /* Data. */
     const vector_t* vec;
 
+    /* Thread number. */
+    size_t h;
+
+    /* Total number of threads. */
+    size_t num_threads;
+
     /* Fragments left to search. */
     pqueue_t* in;
 
     /* Current highest density interval. Density is -Inf if none has been found
      * yet. */
-    interval_t best;
+    interval_t* best;
 
     /* Mutex for atomic access to "best". */
-    pthread_mutex_t best_mutex;
+    pthread_mutex_t* best_mutex;
 
     /* Allowable lengths for highest-density intervals. */
     idx_t k_min, k_max;
@@ -884,7 +1046,7 @@ typedef struct peakolator_ctx_t_
 static void peakolator_brute(peakolator_ctx_t* ctx,
                              const interval_bound_t* bound)
 {
-    double best_density = ctx->best.density;
+    double best_density = ctx->best->density;
 
     idx_t i, j;
     for (i = bound->start_min; i <= bound->start_max; ++i) {
@@ -906,14 +1068,14 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
             double density = ctx->f(x, k) + prior_lookup_eval(ctx->g_lookup, k);
 
             if (density > best_density) {
-                pthread_mutex_lock(&ctx->best_mutex);
-                if (density > ctx->best.density) {
-                    ctx->best.start = i;
-                    ctx->best.end = j;
-                    ctx->best.density = density;
+                pthread_mutex_lock(ctx->best_mutex);
+                if (density > ctx->best->density) {
+                    ctx->best->start = i;
+                    ctx->best->end = j;
+                    ctx->best->density = density;
                 }
-                best_density = ctx->best.density;
-                pthread_mutex_unlock(&ctx->best_mutex);
+                best_density = ctx->best->density;
+                pthread_mutex_unlock(ctx->best_mutex);
             }
         }
     }
@@ -927,14 +1089,13 @@ static const uint64_t brute_cutoff = 1000;
 /* A single peakolator thread. */
 static void* peakolator_thread(void* ctx_)
 {
-    peakolator_ctx_t* ctx= (peakolator_ctx_t*) ctx_;
+    peakolator_ctx_t* ctx = (peakolator_ctx_t*) ctx_;
     interval_bound_t bound, subbound;
 
-
-    while (pqueue_dequeue(ctx->in, &bound)) {
+    while (pqueue_dequeue(ctx->in, ctx->h, &bound)) {
         /* Throw out subsets of the search space that could not possibly hold
          * the high density interval. */
-        if (bound.density_max <= ctx->best.density) {
+        if (bound.density_max <= ctx->best->density) {
             pqueue_finish_one(ctx->in);
             continue;
         }
@@ -992,7 +1153,9 @@ static void* peakolator_thread(void* ctx_)
         subbound.density_max = density_upper_bound(
                 ctx->f, ctx->k_min, ctx->g_mode_lookup,
                 subbound.x_max, subbound.end_max - subbound.start_min + 1);
-        pqueue_enqueue(ctx->in, &subbound);
+        pqueue_enqueue(ctx->in,
+                       interval_bound_hash(&subbound) % ctx->num_threads,
+                       &subbound);
 
         /* Partition 2 */
         subbound.start_min   = bound.start_min;
@@ -1003,7 +1166,9 @@ static void* peakolator_thread(void* ctx_)
         subbound.density_max = density_upper_bound(
                 ctx->f, ctx->k_min, ctx->g_mode_lookup,
                 subbound.x_max, subbound.end_max - subbound.start_min + 1);
-        pqueue_enqueue(ctx->in, &subbound);
+        pqueue_enqueue(ctx->in,
+                       interval_bound_hash(&subbound) % ctx->num_threads,
+                       &subbound);
 
         /* Partition 3 */
         subbound.start_min   = start_mid + 1;
@@ -1014,7 +1179,9 @@ static void* peakolator_thread(void* ctx_)
         subbound.density_max = density_upper_bound(
                 ctx->f, ctx->k_min, ctx->g_mode_lookup,
                 subbound.x_max, subbound.end_max - subbound.start_min + 1);
-        pqueue_enqueue(ctx->in, &subbound);
+        pqueue_enqueue(ctx->in,
+                       interval_bound_hash(&subbound) % ctx->num_threads,
+                       &subbound);
 
         /* Partition 4 */
         if (bound.end_min >= bound.start_max) {
@@ -1026,7 +1193,9 @@ static void* peakolator_thread(void* ctx_)
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
-            pqueue_enqueue(ctx->in, &subbound);
+            pqueue_enqueue(ctx->in,
+                           interval_bound_hash(&subbound) % ctx->num_threads,
+                           &subbound);
         }
 
         pqueue_finish_one(ctx->in);
@@ -1065,13 +1234,24 @@ size_t peakolate(const vector_t* vec,
 
     peakolator_ctx_t ctx;
     ctx.vec = vec;
-    ctx.in = pqueue_create();
-    pthread_mutex_init_or_die(&ctx.best_mutex, NULL);
+    ctx.num_threads = num_threads;
+    ctx.in = pqueue_create(num_threads);
+    ctx.best_mutex = malloc_or_die(sizeof(pthread_mutex_t));
+    pthread_mutex_init_or_die(ctx.best_mutex, NULL);
+    ctx.best = malloc_or_die(sizeof(interval_t));
     ctx.k_min = k_min;
     ctx.k_max = k_max;
     ctx.f = f;
     ctx.g_lookup = g_lookup;
     ctx.g_mode_lookup = g_mode_lookup;
+
+    peakolator_ctx_t* thread_ctx = malloc_or_die(
+            num_threads * sizeof(peakolator_ctx_t));
+    size_t i;
+    for (i = 0; i < num_threads; ++i) {
+        memcpy(&thread_ctx[i], &ctx, sizeof(peakolator_ctx_t));
+        thread_ctx[i].h = i;
+    }
 
     /* Stack of intervals left to search. */
     interval_stack_t* s = interval_stack_create();
@@ -1097,14 +1277,14 @@ size_t peakolate(const vector_t* vec,
         bound.x_max = vector_sum(vec, interval.start, interval.end);
         bound.density_max = density_upper_bound(f, k_min, g_mode_lookup,
                                                 bound.x_max, k);
-        pqueue_enqueue(ctx.in, &bound);
+        pqueue_enqueue(ctx.in, 0, &bound);
 
-        ctx.best.density = -INFINITY;
+        ctx.best->density = -INFINITY;
 
         /* Start up a bunch of search threads. */
-        unsigned int i;
         for (i = 0; i < num_threads; ++i) {
-            pthread_create(&threads[i], NULL, peakolator_thread, &ctx);
+            pthread_create(&threads[i], NULL,
+                           peakolator_thread, &thread_ctx[i]);
         }
 
         for (i = 0; i < num_threads; ++i) {
@@ -1112,16 +1292,16 @@ size_t peakolate(const vector_t* vec,
         }
 
         /* Find anything good? */
-        if (ctx.best.density != -INFINITY) {
-            interval_stack_push(found, &ctx.best);
+        if (ctx.best->density != -INFINITY) {
+            interval_stack_push(found, ctx.best);
 
-            if (ctx.best.start > interval.start) {
-                interval.end = ctx.best.start - 1;
+            if (ctx.best->start > interval.start) {
+                interval.end = ctx.best->start - 1;
                 interval_stack_push(s, &interval);
             }
 
-            if (ctx.best.end < interval.end) {
-                interval.start = ctx.best.end + 1;
+            if (ctx.best->end < interval.end) {
+                interval.start = ctx.best->end + 1;
                 interval_stack_push(s, &interval);
             }
         }
@@ -1133,8 +1313,11 @@ size_t peakolate(const vector_t* vec,
     size_t out_len = found->n;
     interval_stack_free(found);
     interval_stack_free(s);
+    free(thread_ctx);
     pqueue_free(ctx.in);
-    pthread_mutex_destroy(&ctx.best_mutex);
+    pthread_mutex_destroy(ctx.best_mutex);
+    free(ctx.best_mutex);
+    free(ctx.best);
     prior_lookup_free(g_mode_lookup);
     prior_lookup_free(g_lookup);
     free(threads);
