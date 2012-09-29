@@ -28,7 +28,7 @@ static void sort_interval_bounds_asc(interval_bound_t* xs, size_t n)
 
 int main()
 {
-    pqueue_t* q = pqueue_create(1);
+    pqueue_t* q = pqueue_create();
     if (q == NULL) {
         fprintf(stderr, "Failed to create a pqueue.\n");
         return EXIT_FAILURE;
@@ -39,19 +39,17 @@ int main()
     size_t i;
     for (i = 0; i < n; ++i) {
         xs[i].density_max = (double) rand() / (double) RAND_MAX;
-        pqueue_enqueue(q, 0, &xs[i]);
+        pqueue_enqueue(q, &xs[i]);
     }
 
     sort_interval_bounds_asc(xs, n);
 
     interval_bound_t x;
     for (i = 0; i < n; ++i) {
-        if (!pqueue_dequeue(q, 0, &x)) {
+        if (!pqueue_dequeue(q, &x)) {
             fprintf(stderr, "Pqueue was prematurely empty.\n");
             return EXIT_FAILURE;
         }
-
-        pqueue_finish_one(q);
 
         if (memcmp(&xs[i], &x, sizeof(interval_bound_t)) != 0) {
             fprintf(stderr, "Pop number %zu was incorrect.\n", i);
