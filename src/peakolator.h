@@ -145,6 +145,7 @@ typedef double (*prior_function_t)(idx_t);
  *   g: Prior on the length of intervals, or NULL for a flat prior.
  *   min_len: Minimum length of high-density intervals.
  *   max_len: Maximum length of high-density intervals.
+ *   min_density: The minimum density of any high-density region reported.
  *   num_threads: Number of threads to use. If 0, use one thread per cpu core.
  *   out: A pointer to a pointer which will be set to an array holding the
  *        results of the clustering: high-density intervals in descending order
@@ -158,6 +159,7 @@ size_t peakolate(const vector_t* vec,
                  prior_function_t g,
                  idx_t min_len,
                  idx_t max_len,
+                 double min_density,
                  unsigned int num_threads,
                  interval_t** out);
 

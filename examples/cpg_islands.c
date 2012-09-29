@@ -168,11 +168,16 @@ int main(int argc, char* argv[])
 
         interval_t* out;
         size_t out_count = peakolate(vec, f, g,
-                                     min_length, max_length,
+                                     min_length, max_length, log(0.9),
                                      0, &out);
 
-        fprintf(stderr, "%zu islands found.\n", out_count);
+        for (j = 0; j < out_count; ++j) {
+            printf("%s\t%lu\t%lu\t%e\n", seqs[i].name,
+                   (unsigned long) out[j].start, (unsigned long) out[j].end + 1,
+                   out[j].density / M_LN10);
+        }
 
+        free(out);
         vector_free(vec);
     }
 

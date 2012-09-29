@@ -593,7 +593,12 @@ static bool interval_stack_pop(interval_stack_t* s, interval_t* interval)
 }
 
 
-/* TODO: document */
+/* Notify the stack that a previously popped interval is no longer being
+ * processed.
+ *
+ * This function needs to be called for every popped interval so the stack can
+ * keep track of when no more intervals might be pushed.
+ */
 static void interval_stack_finish_one(interval_stack_t* s)
 {
     pthread_mutex_lock(&s->mutex);
@@ -857,6 +862,9 @@ typedef struct peakolator_ctx_t_
     /* Allowable lengths for highest-density intervals. */
     idx_t k_min, k_max;
 
+    /* Minimum density for a reported high-denisty region. */
+    double min_density;
+
     /* Density fuction. */
     density_function_t f;
 
@@ -930,7 +938,7 @@ static void* peakolator_thread(void* ctx_)
         pqueue_enqueue(bounds, &bound);
 
         interval_t best;
-        best.density = -INFINITY;
+        best.density = ctx->min_density;
 
         while (pqueue_dequeue(bounds, &bound)) {
             /* Throw out subsets of the search space that could not possibly
@@ -1031,7 +1039,7 @@ static void* peakolator_thread(void* ctx_)
         }
 
         /* Find anything good? */
-        if (best.density != -INFINITY) {
+        if (best.density > ctx->min_density) {
             interval_stack_push(ctx->out, &best);
 
             idx_t start = interval.start;
@@ -1075,6 +1083,7 @@ size_t peakolate(const vector_t* vec,
                  prior_function_t g,
                  idx_t k_min,
                  idx_t k_max,
+                 double min_density,
                  unsigned int num_threads,
                  interval_t** out)
 {
@@ -1089,6 +1098,7 @@ size_t peakolate(const vector_t* vec,
     ctx.out = interval_stack_create();
     ctx.k_min = k_min;
     ctx.k_max = k_max;
+    ctx.min_density = min_density;
     ctx.f = f;
     ctx.g_lookup = g_lookup;
     ctx.g_mode_lookup = g_mode_lookup;
