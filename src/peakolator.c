@@ -1047,6 +1047,11 @@ static void* peakolator_thread(void* ctx_)
         bound.density_max = density_upper_bound(ctx->f, ctx->k_min,
                                                 ctx->g_mode_lookup,
                                                 bound.x_max, k);
+        if (bound.density_max <= ctx->min_density) {
+            interval_stack_finish_one(ctx->in);
+            continue;
+        }
+
         pqueue_enqueue(bounds, &bound);
 
         interval_t best;
@@ -1111,7 +1116,9 @@ static void* peakolator_thread(void* ctx_)
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
-            pqueue_enqueue(bounds, &subbound);
+            if (subbound.density_max > ctx->min_density) {
+                pqueue_enqueue(bounds, &subbound);
+            }
 
             /* Partition 2 */
             subbound.start_min   = bound.start_min;
@@ -1122,7 +1129,9 @@ static void* peakolator_thread(void* ctx_)
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
-            pqueue_enqueue(bounds, &subbound);
+            if (subbound.density_max > ctx->min_density) {
+                pqueue_enqueue(bounds, &subbound);
+            }
 
             /* Partition 3 */
             subbound.start_min   = start_mid + 1;
@@ -1133,7 +1142,9 @@ static void* peakolator_thread(void* ctx_)
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
-            pqueue_enqueue(bounds, &subbound);
+            if (subbound.density_max > ctx->min_density) {
+                pqueue_enqueue(bounds, &subbound);
+            }
 
             /* Partition 4 */
             if (bound.end_min >= bound.start_max) {
@@ -1145,7 +1156,9 @@ static void* peakolator_thread(void* ctx_)
                 subbound.density_max = density_upper_bound(
                         ctx->f, ctx->k_min, ctx->g_mode_lookup,
                         subbound.x_max, subbound.end_max - subbound.start_min + 1);
-                pqueue_enqueue(bounds, &subbound);
+                if (subbound.density_max > ctx->min_density) {
+                    pqueue_enqueue(bounds, &subbound);
+                }
             }
 
         }
