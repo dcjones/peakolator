@@ -511,7 +511,6 @@ static void interval_bound_copy(interval_bound_t* dest,
 
 
 /* Swap two interval bounds. */
-#if 0
 static void interval_bound_swap(interval_bound_t* a,
                                 interval_bound_t* b)
 {
@@ -520,7 +519,6 @@ static void interval_bound_swap(interval_bound_t* a,
     interval_bound_copy(a, b);
     interval_bound_copy(b, &tmp);
 }
-#endif
 
 
 /* Copy an interval. */
@@ -717,20 +715,14 @@ static void interval_stack_finish_one(interval_stack_t* s)
  */
 typedef struct pqueue_t_
 {
-    /* Store interval bounds. */
-    interval_bound_t* vals;
-
-    /* A stack of indexes of unused solts in vals. */
-    uint32_t* unused;
-
-    /* A heap containing indexes into vals. */
-    uint32_t* heap;
-
-    /* Space reerved. */
-    size_t size;
-
     /* Number of items in the heap. */
     size_t n;
+
+    /* Size reserved. */
+    size_t size;
+
+    /* Items. */
+    interval_bound_t* xs;
 } pqueue_t;
 
 
@@ -740,13 +732,7 @@ static pqueue_t* pqueue_create()
     pqueue_t* q = malloc_or_die(sizeof(pqueue_t));
     q->n = 0;
     q->size = 1024;
-    q->vals = malloc_or_die(q->size * sizeof(interval_bound_t));
-    q->heap = malloc_or_die(q->size * sizeof(uint32_t));
-    q->unused = malloc_or_die(q->size * sizeof(uint32_t));
-    size_t i;
-    for (i = 0; i < q->size; ++i) {
-        q->unused[i] = i;
-    }
+    q->xs = malloc_or_die(q->size * sizeof(interval_bound_t));
 
     return q;
 }
@@ -755,9 +741,7 @@ static pqueue_t* pqueue_create()
 /* Free an priority queue created with pqueue_create. */
 static void pqueue_free(pqueue_t* q)
 {
-    free(q->vals);
-    free(q->heap);
-    free(q->unused);
+    free(q->xs);
     free(q);
 }
 
@@ -765,18 +749,9 @@ static void pqueue_free(pqueue_t* q)
 /* Double the size reserved for heap i. */
 static void pqueue_expand(pqueue_t* q)
 {
-    size_t new_size = q->size * 2;
-    q->vals = realloc_or_die(q->vals, new_size * sizeof(interval_bound_t));
-    q->heap = realloc_or_die(q->heap, new_size * sizeof(uint32_t));
-    q->unused = realloc_or_die(q->unused, new_size * sizeof(uint32_t));
-
-    /* push new indexes onto the unused stack */
-    size_t i, j;
-    for (i = q->size - q->n, j = q->size; j < new_size; ++i, ++j) {
-        q->unused[i] = j;
-    }
-
-    q->size = new_size;
+    q->size *= 2;
+    q->xs = realloc_or_die(q->xs,
+                           q->size * sizeof(interval_bound_t));
 }
 
 
@@ -795,28 +770,21 @@ static inline size_t pqueue_right_idx  (size_t i) { return 2 * i + 2; }
  */
 static void pqueue_enqueue(pqueue_t* q, const interval_bound_t* bound)
 {
+    /* insert */
     if (q->n == q->size) pqueue_expand(q);
 
-    uint32_t idx = q->unused[q->size - q->n - 1];
-    interval_bound_copy(&q->vals[idx], bound);
-
-    q->heap[q->n] = idx;
+    size_t j, i = q->n++;
+    interval_bound_copy(&q->xs[i], bound);
 
     /* percolate up */
-    size_t i = q->n, j;
     while (i > 0) {
         j = pqueue_parent_idx(i);
-
-        if (q->vals[q->heap[j]].density_max < q->vals[q->heap[i]].density_max) {
-            uint32_t tmp = q->heap[i];
-            q->heap[i] = q->heap[j];
-            q->heap[j] = tmp;
+        if (q->xs[j].density_max < q->xs[i].density_max) {
+            interval_bound_swap(&q->xs[i], &q->xs[j]);
             i = j;
         }
         else break;
     }
-
-    ++q->n;
 }
 
 
@@ -838,31 +806,25 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
 {
     if (q->n == 0) return false;
 
-    interval_bound_copy(bound, &q->vals[q->heap[0]]);
-    --q->n;
+    interval_bound_copy(bound, &q->xs[0]);
 
-    /* push head's index to unused */
-    q->unused[q->size - q->n - 1] = q->heap[0];
-
-    /* replace heap */
-    q->heap[0] = q->heap[q->n];
+    /* replace head */
+    interval_bound_copy(&q->xs[0], &q->xs[--q->n]);
 
     /* percolate down */
     size_t l, r, j, i = 0;
     while (true) {
         l = pqueue_left_idx(i);
         r = pqueue_right_idx(i);
-        if (l >= q->n) break;
 
-        j = r < q->n &&
-            q->vals[q->heap[r]].density_max > q->vals[q->heap[l]].density_max ?
-            r : l;
+        if (l < q->n) {
+            j = r < q->n && q->xs[r].density_max > q->xs[l].density_max ? r : l;
 
-        if (q->vals[q->heap[j]].density_max > q->vals[q->heap[i]].density_max) {
-            uint32_t tmp = q->heap[j];
-            q->heap[j] = q->heap[i];
-            q->heap[i] = tmp;
-            i = j;
+            if (q->xs[j].density_max > q->xs[i].density_max) {
+                interval_bound_swap(&q->xs[j], &q->xs[i]);
+                i = j;
+            }
+            else break;
         }
         else break;
     }
@@ -875,10 +837,6 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
 static void pqueue_clear(pqueue_t* q)
 {
     q->n = 0;
-    size_t i;
-    for (i = 0; i < q->size; ++i) {
-        q->unused[i] = i;
-    }
 }
 
 
