@@ -75,7 +75,7 @@ void pthread_cond_init_or_die(pthread_cond_t* cond,
  * precompute sums, and zero compress (i.e., leave out blocks with values
  * summing to 0) */
 
-#define BLOCK_SIZE 1024
+#define BLOCK_SIZE 64
 
 
 static idx_t idxmin(idx_t a, idx_t b)
@@ -254,9 +254,11 @@ idx_t vector_find_block(const vector_t* vec, idx_t i)
 
 
 /* Find the sum of the values in the genomic interval [i, j]. */
-val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v)
+val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v,
+                       idx_t* w0, idx_t* w1)
 {
     idx_t w = vector_find_block_bound(vec, i, u, v);
+    if (w0) *w0 = w;
 
     val_t sum = 0;
 
@@ -276,6 +278,11 @@ val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v)
         sum += block_sum(&vec->blocks[w], 0, j - vec->blocks[w].idx);
     }
 
+    if (w1) {
+        if (w > 0 && (w == vec->m || vec->blocks[w].idx > j)) --w;
+        *w1 = w;
+    }
+
     return sum;
 }
 
@@ -283,8 +290,96 @@ val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v)
 /* Find the sum of the values in the genomic interval [i, j]. */
 val_t vector_sum(const vector_t* vec, idx_t i, idx_t j)
 {
-    return vector_sum_bound(vec, i, j, 0, vec->m);
+    return vector_sum_bound(vec, i, j, 0, vec->m, NULL, NULL);
 }
+
+
+/* An interval with an associated sum that can be efficiently update.
+ *
+ * In particular, we are interested in updating the interval [i, j] to
+ * [i + delta, j] or [i, j + delta] while doing the minimal work to recompute
+ * the sum of that interval.
+ */
+typedef struct vector_sum_t_
+{
+    const vector_t* vec;
+    idx_t start, end;
+    idx_t start_block, end_block;
+    val_t sum;
+} vector_sum_t;
+
+
+/* Create a num vector_sum_t. */
+void vector_sum_set(vector_sum_t* vs, const vector_t* vec,
+                    idx_t start, idx_t end)
+{
+    vs->vec = vec;
+    vs->start = start;
+    vs->end   = end;
+    vs->sum   = vector_sum_bound(vec, start, end,
+                                 0, vec->m,
+                                 &vs->start_block, &vs->end_block);
+}
+
+
+/* Adjust the start of a vector_sum_t. */
+void vector_sum_update_start(vector_sum_t* vs, idx_t new_start)
+{
+    assert(new_start <= vs->end);
+
+    idx_t w0, w1;
+
+    /* Subtracting from the sum. */
+    if (new_start > vs->start) {
+        val_t off = vector_sum_bound(vs->vec, vs->start, new_start - 1,
+                                     vs->start_block, vs->start_block + 1,
+                                     &w0, &w1);
+        vs->start = new_start;
+        vs->start_block = w1;
+        vs->sum -= off;
+    }
+    /* Adding to the sum. */
+    else if (new_start < vs->start) {
+        val_t off = vector_sum_bound(vs->vec, new_start, vs->start - 1,
+                                     0, vs->start_block + 1,
+                                     &w0, &w1);
+        vs->start = new_start;
+        vs->start_block = w0;
+        vs->sum += off;
+    }
+}
+
+
+/* Adjust the end of a vector_sum_t */
+void vector_sum_update_end(vector_sum_t* vs, idx_t new_end)
+{
+    assert(new_end >= vs->start);
+
+    idx_t w0, w1;
+
+    /* Adding to sum. */
+    if (new_end > vs->end) {
+        val_t off = vector_sum_bound(vs->vec, vs->end + 1, new_end,
+                                     vs->end_block, vs->end_block + 1,
+                                     &w0, &w1);
+        vs->end = new_end;
+        vs->end_block = w1;
+        vs->sum += off;
+    }
+    /* Subtracting from sum. */
+    else if (new_end < vs->end) {
+        val_t off = vector_sum_bound(vs->vec, new_end + 1, vs->end,
+                                     vs->start_block, vs->end_block + 1,
+                                     &w0, &w1);
+        vs->end = new_end;
+        vs->end_block = w0;
+        vs->sum -= off;
+    }
+}
+
+
+/* Adjust the end of a vector_sum_t */
+/* TODO */
 
 
 /* A bound on the start and end of an interval. */
@@ -892,24 +987,29 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
                              const interval_bound_t* bound,
                              interval_t* best)
 {
+    vector_sum_t a, b;
     idx_t i, j;
+
+    j = i + ctx->k_min - 1;
+    if (j < bound->end_min) j = bound->end_min;
+    vector_sum_set(&a, ctx->vec, bound->start_min, j);
+
+    /*vector_sum_t* a = vector_sum_create(ctx->vec, bound->start_min);*/
+
     for (i = bound->start_min; i <= bound->start_max; ++i) {
         j = i + ctx->k_min - 1;
         if (j < bound->end_min) j = bound->end_min;
+        vector_sum_update_end(&a, j);
+        vector_sum_update_start(&a, i);
+        memcpy(&b, &a, sizeof(vector_sum_t));
 
         idx_t j_max = i + ctx->k_max - 1;
         if (j_max > bound->end_max) j_max = bound->end_max;
 
         for (; j <= j_max; ++j) {
-            /* TODO:
-             * We could be more clever with counting, since we already
-             * know the sum of [i, j - 1].
-             *
-             * Actually, we really need to be. About 90% of the runtime is the
-             * line below. */
-            val_t x = vector_sum(ctx->vec, i, j);
+            vector_sum_update_end(&b, j);
             idx_t k = j - i + 1;
-            double density = ctx->f(x, k) + prior_lookup_eval(ctx->g_lookup, k);
+            double density = ctx->f(b.sum, k) + prior_lookup_eval(ctx->g_lookup, k);
 
             if (density > best->density) {
                 best->start = i;

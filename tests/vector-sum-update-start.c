@@ -1,7 +1,5 @@
 
-/* Check that sums computed on sparse vectors are correct. A large random
- * vector is generated "sparsified", and random sums are computed and checked.
- */
+/* Check that the vector_sum_update_start function works as advertised. */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -18,7 +16,7 @@ const val_t max_val = 1000;
 /* Size of vector to generate. */
 const size_t n = 500000;
 
-/* Number of random intervals to test. */
+/* Number of random updates to test. */
 const size_t m = 10000;
 
 
@@ -34,28 +32,13 @@ val_t randval()
 }
 
 
-void randinterval(idx_t n, idx_t* u, idx_t* v)
+void check_vector_sum(vector_sum_t* vs)
 {
-    *u = rand() % n;
-    *v = *u + (rand() % (n - *u));
+    if (vs->sum != vector_sum(vs->vec, vs->start, vs->end)) {
+        fprintf(stderr, "Incorrect vector_sum_t.\n");
+        exit(EXIT_FAILURE);
+    }
 }
-
-
-val_t dense_sum(val_t* xs, idx_t i, idx_t j)
-{
-    val_t sum = 0;
-    while (i <= j) sum += xs[i++];
-    return sum;
-}
-
-
-#if 0
-void dense_print(val_t* xs, idx_t i, idx_t j)
-{
-    while (i <= j) fprintf(stderr, " %u", xs[i++]);
-    fprintf(stderr, "\n");
-}
-#endif
 
 
 int main()
@@ -79,20 +62,14 @@ int main()
         return 1;
     }
 
-    idx_t u, v;
-    for (i = 0; i < m; ++i) {
-        randinterval(n, &u, &v);
-        val_t true_sum   = dense_sum(xs, u, v);
-        val_t sparse_sum = vector_sum(vec, u, v);
+    vector_sum_t vs;
+    vector_sum_set(&vs, vec, 0, n - 1);
+    check_vector_sum(&vs);
 
-        if (true_sum != sparse_sum) {
-            fprintf(stderr, "Incorrect sum.\n");
-            return 1;
-        }
+    for (i = 0; i < m; ++i) {
+        vector_sum_update_start(&vs, rand() % n);
+        check_vector_sum(&vs);
     }
 
-    vector_free(vec);
-    free(xs);
-
-    return 0;
+    return EXIT_SUCCESS;
 }

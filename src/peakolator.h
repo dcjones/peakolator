@@ -70,7 +70,8 @@ val_t vector_sum(const vector_t* vec, idx_t i, idx_t j);
  * Returns:
  *   A sum of the values in [i, j].
  */
-val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v);
+val_t vector_sum_bound(const vector_t* vec, idx_t i, idx_t j, idx_t u, idx_t v,
+                       idx_t* w0, idx_t* w1);
 
 
 /* A representation of the interval [start, end] with an associated density. */
