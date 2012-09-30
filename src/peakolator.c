@@ -116,7 +116,7 @@ typedef struct block_t_
  *   The sum xs[i] + ... + xs[j].
  *
  */
-val_t block_sum(const block_t* block, idx_t i, idx_t j)
+static val_t block_sum(const block_t* block, idx_t i, idx_t j)
 {
     val_t sum = 0;
     while (i <= j) sum += block->xs[i++];
@@ -224,10 +224,8 @@ idx_t vector_len(const vector_t* vec)
  *
  * Returns:
  *   An block index j corresponding to the genomic index.
- *
- *
  */
-idx_t vector_find_block_bound(const vector_t* vec, idx_t i, idx_t u, idx_t v)
+static idx_t vector_find_block_bound(const vector_t* vec, idx_t i, idx_t u, idx_t v)
 {
     idx_t mid;
     while (u + 1 < v) {
@@ -408,7 +406,12 @@ static uint64_t interval_bound_count(const interval_bound_t* bound,
 static void interval_bound_copy(interval_bound_t* dest,
                                 const interval_bound_t* src)
 {
-    memcpy(dest, src, sizeof(interval_bound_t));
+    dest->start_min   = src->start_min;
+    dest->start_max   = src->start_max;
+    dest->end_min     = src->end_min;
+    dest->end_max     = src->end_max;
+    dest->density_max = src->density_max;
+    dest->x_max       = src->x_max;
 }
 
 
@@ -426,7 +429,9 @@ static void interval_bound_swap(interval_bound_t* a,
 /* Copy an interval. */
 static void interval_copy(interval_t* dest, const interval_t* src)
 {
-    memcpy(dest, src, sizeof(interval_t));
+    dest->start   = src->start;
+    dest->end     = src->end;
+    dest->density = src->density;
 }
 
 
@@ -733,6 +738,13 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
 }
 
 
+/* Clear a priority queue. */
+static void pqueue_clear(pqueue_t* q)
+{
+    q->n = 0;
+}
+
+
 /* A lookup table for functions of the form idx_t -> double. */
 typedef struct prior_lookup_t_
 {
@@ -944,7 +956,7 @@ static void* peakolator_thread(void* ctx_)
             /* Throw out subsets of the search space that could not possibly
              * hold the high density interval. */
             if (bound.density_max <= best.density) {
-                continue;
+                break;
             }
 
             uint64_t count = interval_bound_count(&bound,
@@ -1037,6 +1049,8 @@ static void* peakolator_thread(void* ctx_)
             }
 
         }
+
+        pqueue_clear(bounds);
 
         /* Find anything good? */
         if (best.density > ctx->min_density) {
