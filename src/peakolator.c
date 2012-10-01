@@ -465,6 +465,13 @@ typedef struct interval_bound_t_
 int interval_bound_cmp(const interval_bound_t* a, const interval_bound_t* b);
 
 
+/* Naive density used as heuristic for best-first search. */
+static double interval_bound_naive_density(const interval_bound_t* bound)
+{
+    return bound->x_max / (double) (bound->end_max - bound->start_min + 1);
+}
+
+
 /* Arithmetic with uint64_t that bottoms out rather than overflows. */
 static uint64_t uint64_add(uint64_t a, uint64_t b)
 {
@@ -828,11 +835,12 @@ static void pqueue_enqueue(pqueue_t* q, const interval_bound_t* bound)
 
     size_t j, i = q->n++;
     interval_bound_copy(&q->xs[i], bound);
+    double naive_density = interval_bound_naive_density(bound);
 
     /* percolate up */
     while (i > 0) {
         j = pqueue_parent_idx(i);
-        if (q->xs[j].density_max < q->xs[i].density_max) {
+        if (interval_bound_naive_density(&q->xs[j]) < naive_density) {
             interval_bound_swap(&q->xs[i], &q->xs[j]);
             i = j;
         }
@@ -860,9 +868,11 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
     if (q->n == 0) return false;
 
     interval_bound_copy(bound, &q->xs[0]);
+    if (--q->n == 0) return true;
 
     /* replace head */
-    interval_bound_copy(&q->xs[0], &q->xs[--q->n]);
+    interval_bound_copy(&q->xs[0], &q->xs[q->n]);
+    double naive_density = interval_bound_naive_density(&q->xs[0]);
 
     /* percolate down */
     size_t l, r, j, i = 0;
@@ -870,14 +880,29 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
         l = pqueue_left_idx(i);
         r = pqueue_right_idx(i);
 
-        if (l < q->n) {
-            j = r < q->n && q->xs[r].density_max > q->xs[l].density_max ? r : l;
+        if (l >= q->n) break;
 
-            if (q->xs[j].density_max > q->xs[i].density_max) {
-                interval_bound_swap(&q->xs[j], &q->xs[i]);
-                i = j;
+        double j_nd, r_nd, l_nd = interval_bound_naive_density(&q->xs[l]);
+
+        if (r >= q->n) {
+            j = l;
+            j_nd = l_nd;
+        }
+        else {
+            r_nd = interval_bound_naive_density(&q->xs[r]);
+            if (l_nd > r_nd) {
+                j = l;
+                j_nd = l_nd;
             }
-            else break;
+            else {
+                j = r;
+                j_nd = r_nd;
+            }
+        }
+
+        if (j_nd > naive_density) {
+            interval_bound_swap(&q->xs[j], &q->xs[i]);
+            i = j;
         }
         else break;
     }

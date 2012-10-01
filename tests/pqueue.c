@@ -13,9 +13,12 @@ static int interval_bound_cmp_asc(const void* a_, const void* b_)
     const interval_bound_t* a = (interval_bound_t*) a_;
     const interval_bound_t* b = (interval_bound_t*) b_;
 
-    if      (a->density_max == b->density_max) return  0;
-    else if (a->density_max <  b->density_max) return  1;
-    else                                       return -1;
+    double a_nd = interval_bound_naive_density(a);
+    double b_nd = interval_bound_naive_density(b);
+
+    if      (a_nd == b_nd) return  0;
+    else if (a_nd <  b_nd) return  1;
+    else                   return -1;
 }
 
 
@@ -36,9 +39,12 @@ int main()
 
     size_t n = 100000;
     interval_bound_t* xs = malloc(n * sizeof(interval_bound_t));
+    memset(xs, 0, n * sizeof(interval_bound_t));
     size_t i;
     for (i = 0; i < n; ++i) {
-        xs[i].density_max = (double) rand() / (double) RAND_MAX;
+        xs[i].start_min = 100000.0 * ((double) rand() / (double) RAND_MAX);
+        xs[i].end_max = xs[i].start_min + 1000.0 * ((double) rand() / (double) RAND_MAX);
+        xs[i].x_max = (double) rand() / (double) RAND_MAX;
         pqueue_enqueue(q, &xs[i]);
     }
 
