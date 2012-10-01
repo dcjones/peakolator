@@ -75,7 +75,7 @@ void pthread_cond_init_or_die(pthread_cond_t* cond,
  * precompute sums, and zero compress (i.e., leave out blocks with values
  * summing to 0) */
 
-#define BLOCK_SIZE 64
+#define BLOCK_SIZE 32
 
 
 static idx_t idxmin(idx_t a, idx_t b)
@@ -347,6 +347,36 @@ void vector_sum_update_start(vector_sum_t* vs, idx_t new_start)
         vs->start_block = w0;
         vs->sum += off;
     }
+
+    if (vs->start_block + 1 < vs->vec->m &&
+        vs->start >= vs->vec->blocks[vs->start_block + 1].idx) {
+        ++vs->start_block;
+    }
+    else if (vs->start_block > 0 &&
+             vs->start < vs->vec->blocks[vs->start_block].idx) {
+        --vs->end_block;
+    }
+}
+
+
+void vector_sum_inc_start(vector_sum_t* vs)
+{
+    assert(vs->start < vs->end);
+    assert(vs->start_block < vs->vec->m);
+    const block_t* block = &vs->vec->blocks[vs->start_block];
+
+    if (vs->start >= block->idx &&
+        vs->start < block->idx + BLOCK_SIZE) {
+        vs->sum -= block->xs[vs->start - block->idx];
+    }
+
+    if (vs->start < block->idx + BLOCK_SIZE &&
+        vs->start_block + 1 < vs->vec->m &&
+        vs->start + 1 >= vs->vec->blocks[vs->start_block + 1].idx) {
+        ++vs->start_block;
+    }
+
+    ++vs->start;
 }
 
 
@@ -375,11 +405,34 @@ void vector_sum_update_end(vector_sum_t* vs, idx_t new_end)
         vs->end_block = w0;
         vs->sum -= off;
     }
+
+    if (vs->end_block + 1 < vs->vec->m &&
+        vs->end >= vs->vec->blocks[vs->end_block + 1].idx) {
+        ++vs->end_block;
+    }
+    else if (vs->end_block > 0 &&
+             vs->end < vs->vec->blocks[vs->end_block].idx) {
+        --vs->end_block;
+    }
 }
 
 
-/* Adjust the end of a vector_sum_t */
-/* TODO */
+void vector_sum_inc_end(vector_sum_t* vs)
+{
+    if (vs->end < vs->vec->blocks[vs->end_block].idx + BLOCK_SIZE &&
+        vs->end_block +1 < vs->vec->m &&
+        vs->end + 1 >= vs->vec->blocks[vs->end_block + 1].idx) {
+        ++vs->end_block;
+    }
+    ++vs->end;
+
+    const block_t* block = &vs->vec->blocks[vs->end_block];
+
+    if (vs->end >= block->idx &&
+        vs->end <  block->idx + BLOCK_SIZE) {
+        vs->sum += block->xs[vs->end - block->idx];
+    }
+}
 
 
 /* A bound on the start and end of an interval. */
@@ -994,20 +1047,22 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
     if (j < bound->end_min) j = bound->end_min;
     vector_sum_set(&a, ctx->vec, bound->start_min, j);
 
-    /*vector_sum_t* a = vector_sum_create(ctx->vec, bound->start_min);*/
-
     for (i = bound->start_min; i <= bound->start_max; ++i) {
         j = i + ctx->k_min - 1;
         if (j < bound->end_min) j = bound->end_min;
         vector_sum_update_end(&a, j);
-        vector_sum_update_start(&a, i);
+        /*vector_sum_update_start(&a, i);*/
+        if (i > bound->start_min) vector_sum_inc_start(&a);
         memcpy(&b, &a, sizeof(vector_sum_t));
 
         idx_t j_max = i + ctx->k_max - 1;
         if (j_max > bound->end_max) j_max = bound->end_max;
 
-        for (; j <= j_max; ++j) {
-            vector_sum_update_end(&b, j);
+        /* TODO: Why does this actually occur? */
+        if (j > j_max) continue;
+
+        while (true) {
+            /*vector_sum_update_end(&b, j);*/
             idx_t k = j - i + 1;
             double density = ctx->f(b.sum, k) + prior_lookup_eval(ctx->g_lookup, k);
 
@@ -1016,6 +1071,10 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
                 best->end = j;
                 best->density = density;
             }
+
+            if (j == j_max) break;
+            vector_sum_inc_end(&b);
+            ++j;
         }
     }
 }
@@ -1094,8 +1153,8 @@ static void* peakolator_thread(void* ctx_)
              * sometimes three partitions.).
              * */
 
-            bool equal_bound = bound.start_min == bound.end_min &&
-                               bound.start_max == bound.end_max;
+            /*bool equal_bound = bound.start_min == bound.end_min &&*/
+                               /*bound.start_max == bound.end_max;*/
 
             idx_t start_bound_len = bound.start_max - bound.start_min + 1;
             idx_t end_bound_len   = bound.end_max   - bound.end_min + 1;
@@ -1103,8 +1162,8 @@ static void* peakolator_thread(void* ctx_)
             idx_t end_mid = bound.end_min + end_bound_len / 2;
 
             val_t x_start0 = vector_sum(ctx->vec, bound.start_min, start_mid);
-            val_t x_start1 = vector_sum(ctx->vec, start_mid + 1,bound.start_max);
-            val_t x_end0   = vector_sum(ctx->vec, bound.end_min, end_mid);
+            /*val_t x_start1 = vector_sum(ctx->vec, start_mid + 1,bound.start_max);*/
+            /*val_t x_end0   = vector_sum(ctx->vec, bound.end_min, end_mid);*/
             val_t x_end1   = vector_sum(ctx->vec, end_mid + 1, bound.end_max);
 
             /* Partition 1 */
@@ -1112,7 +1171,7 @@ static void* peakolator_thread(void* ctx_)
             subbound.start_max   = start_mid;
             subbound.end_min     = end_mid + 1;
             subbound.end_max     = bound.end_max;
-            subbound.x_max       = x_start0 + x_end1;
+            subbound.x_max       = bound.x_max;
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
@@ -1125,7 +1184,7 @@ static void* peakolator_thread(void* ctx_)
             subbound.start_max   = start_mid;
             subbound.end_min     = bound.end_min;
             subbound.end_max     = end_mid;
-            subbound.x_max       = equal_bound ? x_start0 : x_start0 + x_end0;
+            subbound.x_max       = bound.x_max - x_end1;
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
@@ -1138,7 +1197,7 @@ static void* peakolator_thread(void* ctx_)
             subbound.start_max   = bound.start_max;
             subbound.end_min     = end_mid + 1;
             subbound.end_max     = bound.end_max;
-            subbound.x_max       = equal_bound ? x_start1 : x_start1 + x_end1;
+            subbound.x_max       = bound.x_max - x_start0;
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
@@ -1152,7 +1211,7 @@ static void* peakolator_thread(void* ctx_)
                 subbound.start_max   = bound.start_max;
                 subbound.end_min     = bound.end_min;
                 subbound.end_max     = end_mid;
-                subbound.x_max       = x_start1 + x_end0;
+                subbound.x_max       = bound.x_max - x_start0 - x_end1;
                 subbound.density_max = density_upper_bound(
                         ctx->f, ctx->k_min, ctx->g_mode_lookup,
                         subbound.x_max, subbound.end_max - subbound.start_min + 1);
@@ -1160,7 +1219,6 @@ static void* peakolator_thread(void* ctx_)
                     pqueue_enqueue(bounds, &subbound);
                 }
             }
-
         }
 
         pqueue_clear(bounds);
