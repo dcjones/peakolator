@@ -168,7 +168,7 @@ int main(int argc, char* argv[])
 
         interval_t* out;
         size_t out_count = peakolate(vec, f, g,
-                                     min_length, max_length, log(0.9),
+                                     min_length, max_length, log(0.99),
                                      0, &out);
 
         for (j = 0; j < out_count; ++j) {

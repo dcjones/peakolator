@@ -118,6 +118,9 @@ typedef struct block_t_
  */
 static val_t block_sum(const block_t* block, idx_t i, idx_t j)
 {
+    assert(i < BLOCK_SIZE);
+    assert(j < BLOCK_SIZE);
+
     val_t sum = 0;
     while (i <= j) sum += block->xs[i++];
     return sum;
@@ -450,6 +453,16 @@ typedef struct interval_bound_t_
     /* An upper bound on the mass of any interval within this bound. */
     val_t x_max;
 } interval_bound_t;
+
+
+/* Minimum interval length within this bound. */
+static idx_t interval_bound_min_len(const interval_bound_t* bound)
+{
+    if (bound->end_min > bound->start_max) {
+        return bound->end_min - bound->start_max + 1;
+    }
+    else return 1;
+}
 
 
 /* Compare two interval bounds;
@@ -1038,6 +1051,10 @@ typedef struct peakolator_ctx_t_
     /* Data. */
     const vector_t* vec;
 
+    /* How many positions have been searched. */
+    pthread_mutex_t done_mutex;
+    size_t done;
+
     /* Intervals left to search. */
     interval_stack_t* in;
 
@@ -1068,8 +1085,9 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
     vector_sum_t a, b;
     idx_t i, j;
 
-    j = i + ctx->k_min - 1;
+    j = bound->start_min + ctx->k_min - 1;
     if (j < bound->end_min) j = bound->end_min;
+
     vector_sum_set(&a, ctx->vec, bound->start_min, j);
 
     for (i = bound->start_min; i <= bound->start_max; ++i) {
@@ -1106,7 +1124,7 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
 
 
 /* Use brute-force search when there are fewer than this many intervals. */
-static const uint64_t brute_cutoff = 1000;
+static const uint64_t brute_cutoff = 10000;
 
 
 /* A single peakolator thread. */
@@ -1121,6 +1139,9 @@ static void* peakolator_thread(void* ctx_)
     while (interval_stack_pop(ctx->in, &interval)) {
         idx_t k = interval.end - interval.start + 1;
         if (k < ctx->k_min) {
+            pthread_mutex_lock(&ctx->done_mutex);
+            ctx->done += k;
+            pthread_mutex_unlock(&ctx->done_mutex);
             interval_stack_finish_one(ctx->in);
             continue;
         }
@@ -1132,6 +1153,9 @@ static void* peakolator_thread(void* ctx_)
                                                 ctx->g_mode_lookup,
                                                 bound.x_max, k);
         if (bound.density_max <= ctx->min_density) {
+            pthread_mutex_lock(&ctx->done_mutex);
+            ctx->done += k;
+            pthread_mutex_unlock(&ctx->done_mutex);
             interval_stack_finish_one(ctx->in);
             continue;
         }
@@ -1142,18 +1166,21 @@ static void* peakolator_thread(void* ctx_)
         best.density = ctx->min_density;
 
         while (pqueue_dequeue(bounds, &bound)) {
+
+            /* NOTE: this doesn't apply when we are using naive density as the
+             * heuristic. */
             /* Throw out subsets of the search space that could not possibly
              * hold the high density interval. */
-            if (bound.density_max <= best.density) {
-                break;
-            }
+            /*if (bound.density_max <= best.density) {*/
+                /*break;*/
+            /*}*/
+
+            if (bound.density_max <= best.density) continue;
 
             uint64_t count = interval_bound_count(&bound,
                                                   ctx->k_min, ctx->k_max);
+            if (count == 0)  continue;
 
-            if (count == 0) {
-                continue;
-            }
             /* Resort to a brute force search when the bound contains relatively
              * few intervals. */
             else if (count < brute_cutoff) {
@@ -1187,8 +1214,6 @@ static void* peakolator_thread(void* ctx_)
             idx_t end_mid = bound.end_min + end_bound_len / 2;
 
             val_t x_start0 = vector_sum(ctx->vec, bound.start_min, start_mid);
-            /*val_t x_start1 = vector_sum(ctx->vec, start_mid + 1,bound.start_max);*/
-            /*val_t x_end0   = vector_sum(ctx->vec, bound.end_min, end_mid);*/
             val_t x_end1   = vector_sum(ctx->vec, end_mid + 1, bound.end_max);
 
             /* Partition 1 */
@@ -1200,7 +1225,8 @@ static void* peakolator_thread(void* ctx_)
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
-            if (subbound.density_max > ctx->min_density) {
+            if (interval_bound_min_len(&subbound) <= ctx->k_max &&
+                subbound.density_max > ctx->min_density) {
                 pqueue_enqueue(bounds, &subbound);
             }
 
@@ -1213,7 +1239,8 @@ static void* peakolator_thread(void* ctx_)
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
-            if (subbound.density_max > ctx->min_density) {
+            if (interval_bound_min_len(&subbound) <= ctx->k_max &&
+                subbound.density_max > ctx->min_density) {
                 pqueue_enqueue(bounds, &subbound);
             }
 
@@ -1226,7 +1253,8 @@ static void* peakolator_thread(void* ctx_)
             subbound.density_max = density_upper_bound(
                     ctx->f, ctx->k_min, ctx->g_mode_lookup,
                     subbound.x_max, subbound.end_max - subbound.start_min + 1);
-            if (subbound.density_max > ctx->min_density) {
+            if (interval_bound_min_len(&subbound) <= ctx->k_max &&
+                subbound.density_max > ctx->min_density) {
                 pqueue_enqueue(bounds, &subbound);
             }
 
@@ -1240,7 +1268,8 @@ static void* peakolator_thread(void* ctx_)
                 subbound.density_max = density_upper_bound(
                         ctx->f, ctx->k_min, ctx->g_mode_lookup,
                         subbound.x_max, subbound.end_max - subbound.start_min + 1);
-                if (subbound.density_max > ctx->min_density) {
+                if (interval_bound_min_len(&subbound) <= ctx->k_max &&
+                    subbound.density_max > ctx->min_density) {
                     pqueue_enqueue(bounds, &subbound);
                 }
             }
@@ -1248,9 +1277,12 @@ static void* peakolator_thread(void* ctx_)
 
         pqueue_clear(bounds);
 
+        pthread_mutex_lock(&ctx->done_mutex);
+
         /* Find anything good? */
         if (best.density > ctx->min_density) {
             interval_stack_push(ctx->out, &best);
+            ctx->done += best.end - best.start + 1;
 
             idx_t start = interval.start;
             idx_t end   = interval.end;
@@ -1260,18 +1292,37 @@ static void* peakolator_thread(void* ctx_)
                 interval.end   = best.start - 1;
                 interval_stack_push(ctx->in, &interval);
             }
+            else ctx->done += best.start - start;
 
             if (end - best.end >= ctx->k_min) {
                 interval.start = best.end + 1;
                 interval.end   = end;
                 interval_stack_push(ctx->in, &interval);
             }
+            else ctx->done += end - best.end;
         }
+        else ctx->done += interval.end - interval.start + 1;
 
+        pthread_mutex_unlock(&ctx->done_mutex);
         interval_stack_finish_one(ctx->in);
     }
 
     pqueue_free(bounds);
+    return NULL;
+}
+
+
+/* Print a progress indicator. */
+void* peakolator_progress(void* ctx_)
+{
+    peakolator_ctx_t* ctx = (peakolator_ctx_t*) ctx_;
+
+    while (true) {
+        double p = (double) ctx->done / (double) ctx->vec->n;
+        fprintf(stderr, "%0.2f%%\n", 100.0 * p);
+        sleep(1.0);
+    }
+
     return NULL;
 }
 
@@ -1304,6 +1355,8 @@ size_t peakolate(const vector_t* vec,
 
     peakolator_ctx_t ctx;
     ctx.vec = vec;
+    pthread_mutex_init_or_die(&ctx.done_mutex, NULL);
+    ctx.done = 0;
     ctx.in  = interval_stack_create();
     ctx.out = interval_stack_create();
     ctx.k_min = k_min;
@@ -1324,14 +1377,20 @@ size_t peakolate(const vector_t* vec,
         pthread_create(&threads[i], NULL, peakolator_thread, &ctx);
     }
 
+    pthread_t progress_thread;
+    pthread_create(&progress_thread, NULL, peakolator_progress, &ctx);
+
     for (i = 0; i < num_threads; ++i) {
         pthread_join(threads[i], NULL);
     }
+
+    pthread_cancel(progress_thread);
 
     *out = malloc_or_die(ctx.out->n * sizeof(interval_t));
     memcpy(*out, ctx.out->xs, ctx.out->n * sizeof(interval_t));
     sort_intervals_des_density(*out, ctx.out->n);
     size_t out_len = ctx.out->n;
+    pthread_mutex_destroy(&ctx.done_mutex);
     interval_stack_free(ctx.in);
     interval_stack_free(ctx.out);
     prior_lookup_free(g_mode_lookup);

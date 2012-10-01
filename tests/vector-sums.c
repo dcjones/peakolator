@@ -16,7 +16,7 @@ const double pr_zero = 0.99;
 const val_t max_val = 1000;
 
 /* Size of vector to generate. */
-const size_t n = 500000;
+const size_t n = 50000;
 
 /* Number of random intervals to test. */
 const size_t m = 10000;
