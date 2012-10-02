@@ -7,7 +7,7 @@
 #include "../src/peakolator.h"
 
 
-static idx_t min_length  = 100;
+static idx_t min_length  = 500;
 static idx_t max_length  = 10000;
 static double mean_length = 1000;
 static double std_length  = 500;
@@ -180,7 +180,7 @@ int main(int argc, char* argv[])
         interval_t* out;
         size_t out_count = peakolate(vec, f, g,
                                      min_length, max_length,
-                                     0.1,
+                                     0.10,
                                      /*log(0.99),*/
                                      0, &out);
 
