@@ -79,6 +79,7 @@ typedef struct interval_t_
 {
     idx_t start, end;
     double density;
+    val_t x;
 } interval_t;
 
 

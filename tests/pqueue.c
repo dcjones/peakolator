@@ -13,12 +13,7 @@ static int interval_bound_cmp_asc(const void* a_, const void* b_)
     const interval_bound_t* a = (interval_bound_t*) a_;
     const interval_bound_t* b = (interval_bound_t*) b_;
 
-    double a_nd = interval_bound_naive_density(a);
-    double b_nd = interval_bound_naive_density(b);
-
-    if      (a_nd == b_nd) return  0;
-    else if (a_nd <  b_nd) return  1;
-    else                   return -1;
+    return -interval_bound_cmp_priority(a, b);
 }
 
 

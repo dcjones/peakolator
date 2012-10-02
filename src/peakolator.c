@@ -465,23 +465,31 @@ static idx_t interval_bound_min_len(const interval_bound_t* bound)
 }
 
 
-/* Compare two interval bounds;
+/* Compare two interval bounds using heuristic ordering.
+ *
+ * Specifically, the bound with the largest upper-bound density will be first,
+ * with naive density (mass/area) used as a tie breker.
  *
  * Args:
  *   a: An interval bound.
- *   b: Another interval bound.
+ *   b: An interval bound.
  *
  * Returns:
- *   Returns 0 if the bounds are equal and non-zero otherwise.
- *   (Hint: this is just a wrapper around memcmp.)
+ *   > 0 if a is higher priority than b, 0 if equal, and < 0 if lesser.
  */
-int interval_bound_cmp(const interval_bound_t* a, const interval_bound_t* b);
-
-
-/* Naive density used as heuristic for best-first search. */
-static double interval_bound_naive_density(const interval_bound_t* bound)
+static int interval_bound_cmp_priority(const interval_bound_t* a,
+                                       const interval_bound_t* b)
 {
-    return bound->x_max / (double) (bound->end_max - bound->start_min + 1);
+    if      (a->density_max > b->density_max) return  1;
+    else if (a->density_max < b->density_max) return -1;
+    else {
+        double u = (double) a->x_max / (double) (a->end_max - a->start_min + 1);
+        double v = (double) b->x_max / (double) (b->end_max - b->start_min + 1);
+
+        if (u > v) return  1;
+        if (u < v) return -1;
+        else       return  0;
+    }
 }
 
 
@@ -600,6 +608,7 @@ static void interval_copy(interval_t* dest, const interval_t* src)
     dest->start   = src->start;
     dest->end     = src->end;
     dest->density = src->density;
+    dest->x       = src->x;
 }
 
 
@@ -848,12 +857,11 @@ static void pqueue_enqueue(pqueue_t* q, const interval_bound_t* bound)
 
     size_t j, i = q->n++;
     interval_bound_copy(&q->xs[i], bound);
-    double naive_density = interval_bound_naive_density(bound);
 
     /* percolate up */
     while (i > 0) {
         j = pqueue_parent_idx(i);
-        if (interval_bound_naive_density(&q->xs[j]) < naive_density) {
+        if (interval_bound_cmp_priority(&q->xs[i], &q->xs[j]) > 0) {
             interval_bound_swap(&q->xs[i], &q->xs[j]);
             i = j;
         }
@@ -885,7 +893,6 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
 
     /* replace head */
     interval_bound_copy(&q->xs[0], &q->xs[q->n]);
-    double naive_density = interval_bound_naive_density(&q->xs[0]);
 
     /* percolate down */
     size_t l, r, j, i = 0;
@@ -895,25 +902,19 @@ static bool pqueue_dequeue(pqueue_t* q, interval_bound_t* bound)
 
         if (l >= q->n) break;
 
-        double j_nd, r_nd, l_nd = interval_bound_naive_density(&q->xs[l]);
-
         if (r >= q->n) {
             j = l;
-            j_nd = l_nd;
         }
         else {
-            r_nd = interval_bound_naive_density(&q->xs[r]);
-            if (l_nd > r_nd) {
+            if (interval_bound_cmp_priority(&q->xs[l], &q->xs[r]) > 0) {
                 j = l;
-                j_nd = l_nd;
             }
             else {
                 j = r;
-                j_nd = r_nd;
             }
         }
 
-        if (j_nd > naive_density) {
+        if (interval_bound_cmp_priority(&q->xs[i], &q->xs[j]) < 0) {
             interval_bound_swap(&q->xs[j], &q->xs[i]);
             i = j;
         }
@@ -1113,6 +1114,7 @@ static void peakolator_brute(peakolator_ctx_t* ctx,
                 best->start = i;
                 best->end = j;
                 best->density = density;
+                best->x = b.sum;
             }
 
             if (j == j_max) break;
@@ -1171,11 +1173,11 @@ static void* peakolator_thread(void* ctx_)
              * heuristic. */
             /* Throw out subsets of the search space that could not possibly
              * hold the high density interval. */
-            /*if (bound.density_max <= best.density) {*/
-                /*break;*/
-            /*}*/
+            if (bound.density_max <= best.density) {
+                break;
+            }
 
-            if (bound.density_max <= best.density) continue;
+            /*if (bound.density_max <= best.density) continue;*/
 
             uint64_t count = interval_bound_count(&bound,
                                                   ctx->k_min, ctx->k_max);
@@ -1367,7 +1369,7 @@ size_t peakolate(const vector_t* vec,
     ctx.g_mode_lookup = g_mode_lookup;
 
     /* Initial interval to search. */
-    interval_t interval = {0, vector_len(vec) - 1, -INFINITY};
+    interval_t interval = {0, vector_len(vec) - 1, -INFINITY, 0};
     interval_stack_push(ctx.in, &interval);
 
     pthread_t* threads = malloc_or_die(num_threads * sizeof(pthread_t));

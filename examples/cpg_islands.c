@@ -8,7 +8,7 @@
 
 
 static idx_t min_length  = 100;
-static idx_t max_length  = 100000;
+static idx_t max_length  = 10000;
 static double mean_length = 1000;
 static double std_length  = 500;
 static double fore_log_p, fore_log_q, back_log_p, back_log_q;
@@ -29,10 +29,16 @@ static double logaddexp(double x, double y)
 
 double f(val_t x_, idx_t k_)
 {
+/* This objective function is fucked. It's very easy to arrive at a posterion
+ * probability of 1.0 */
+
     double x = (double) x_;
     double k = (double) k_;
 
     if (x > k) x = k;
+
+    return x / k;
+#if 0
 
     /* These are binomial distribution propabilities, but witohut the binomial
      * coefficient term, since that drops out of the posterior probality. */
@@ -40,7 +46,12 @@ double f(val_t x_, idx_t k_)
     double v = x * back_log_p + (k - x) * back_log_q;
 
     /* TODO: prior */
+    if (u - logaddexp(u, v) == 0) {
+        fprintf(stderr, "HERE\n");
+    }
+
     return u - logaddexp(u, v);
+#endif
 }
 
 
@@ -168,13 +179,16 @@ int main(int argc, char* argv[])
 
         interval_t* out;
         size_t out_count = peakolate(vec, f, g,
-                                     min_length, max_length, log(0.99),
+                                     min_length, max_length,
+                                     0.1,
+                                     /*log(0.99),*/
                                      0, &out);
 
         for (j = 0; j < out_count; ++j) {
             printf("%s\t%lu\t%lu\t%e\n", seqs[i].name,
                    (unsigned long) out[j].start, (unsigned long) out[j].end + 1,
-                   out[j].density / M_LN10);
+                   out[j].x);
+                   /*out[j].density / M_LN10);*/
         }
 
         free(out);
