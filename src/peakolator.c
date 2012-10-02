@@ -796,6 +796,27 @@ static bool interval_stack_pop(interval_stack_t* s, interval_t* interval)
 }
 
 
+/* Return true if the stack is finished.
+ *
+ * Finished in this context means that it is empty and there are no pending
+ * items (i.e., interval_stack_finish_one was called on everything that was
+ * dequeued).
+ *
+ * Args:
+ *   s: A stack.
+ *
+ * Returns
+ *   true if finished.
+ */
+static bool interval_stack_finished(interval_stack_t* s)
+{
+    pthread_mutex_lock(&s->mutex);
+    bool finished = s->n == 0 && s->pending == 0;
+    pthread_mutex_unlock(&s->mutex);
+    return finished;
+}
+
+
 /* Notify the stack that a previously popped interval is no longer being
  * processed.
  *
@@ -1337,15 +1358,31 @@ static void* peakolator_thread(void* ctx_)
 }
 
 
-/* Print a progress indicator. */
+/* Print a progress indicator in a seperate thread.
+ *
+ * Args:
+ *   ctx_: A pointer to the peakolator_cxt_t that was passed to the peakolator
+ *         threads.
+ * */
 void* peakolator_progress(void* ctx_)
 {
     peakolator_ctx_t* ctx = (peakolator_ctx_t*) ctx_;
 
-    while (true) {
+    size_t barlen = 60;
+
+    fprintf(stderr, "  |\033[s");
+
+    while (!interval_stack_finished(ctx->in)) {
         double p = (double) ctx->done / (double) ctx->vec->n;
-        fprintf(stderr, "%0.2f%%\n", 100.0 * p);
-        sleep(1.0);
+        size_t i;
+        fprintf(stderr, "\033[u\033[K");
+
+        size_t steps = (size_t) round(p * (double) barlen);
+        for (i = 0; i < steps; ++i) fputc('.', stderr);
+        for (i = 0; i < barlen - steps; ++i) fputc(' ', stderr);
+        fprintf(stderr, "| %0.2f%%", 100.0 * p);
+
+        usleep(100000);
     }
 
     return NULL;
@@ -1404,12 +1441,12 @@ size_t peakolate(const vector_t* vec,
 
     pthread_t progress_thread;
     pthread_create(&progress_thread, NULL, peakolator_progress, &ctx);
+    pthread_join(progress_thread, NULL);
+    fputs("\033[G\033[K", stderr); /* Clear progress bar. */
 
     for (i = 0; i < num_threads; ++i) {
         pthread_join(threads[i], NULL);
     }
-
-    pthread_cancel(progress_thread);
 
     *out = malloc_or_die(ctx.out->n * sizeof(interval_t));
     memcpy(*out, ctx.out->xs, ctx.out->n * sizeof(interval_t));
