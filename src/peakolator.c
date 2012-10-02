@@ -1408,6 +1408,7 @@ size_t peakolate(const vector_t* vec,
                  idx_t k_max,
                  double min_density,
                  unsigned int num_threads,
+                 bool show_progress,
                  interval_t** out)
 {
     if (num_threads == 0) num_threads = ncpus();
@@ -1439,10 +1440,12 @@ size_t peakolate(const vector_t* vec,
         pthread_create(&threads[i], NULL, peakolator_thread, &ctx);
     }
 
-    pthread_t progress_thread;
-    pthread_create(&progress_thread, NULL, peakolator_progress, &ctx);
-    pthread_join(progress_thread, NULL);
-    fputs("\033[G\033[K", stderr); /* Clear progress bar. */
+    if (show_progress) {
+        pthread_t progress_thread;
+        pthread_create(&progress_thread, NULL, peakolator_progress, &ctx);
+        pthread_join(progress_thread, NULL);
+        fputs("\033[G\033[K", stderr); /* Clear progress bar. */
+    }
 
     for (i = 0; i < num_threads; ++i) {
         pthread_join(threads[i], NULL);

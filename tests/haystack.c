@@ -38,7 +38,7 @@ int main()
     free(xs);
 
     interval_t* out;
-    size_t count = peakolate(vec, f, g, 1, 10000, -INFINITY, 0, &out);
+    size_t count = peakolate(vec, f, g, 1, 10000, -INFINITY, 0, false, &out);
     sort_intervals_des_density(out, count);
 
     if (count == 0) {

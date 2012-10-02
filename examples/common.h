@@ -59,7 +59,10 @@ void str_free(str_t* str)
 void str_reserve_extra(str_t* str, size_t size)
 {
     if (str->n + size > str->size) {
-        str->size = str->n + size;
+        if (str->n + size > 2 * str->size) {
+            str->size = str->n + size;
+        }
+        else str->size *= 2;
         str->s = realloc_or_die(str->s, str->size * sizeof(char));
     }
 }
@@ -73,23 +76,21 @@ void str_append_char(str_t* a, char c)
 }
 
 
+/* Append some bytes to a string. */
+void str_append(str_t* a, char* c, size_t n)
+{
+    str_reserve_extra(a, n);
+    memcpy(a->s + a->n, c, n);
+    a->n += n;
+}
+
+
 /* A sequence with an associated name. */
 typedef struct
 {
-    char* name;
-    char* seq;
+    str_t name;
+    str_t seq;
 } namedseq_t;
-
-
-/* Does a character represent a nucleotide? */
-static bool is_nt_char(char c)
-{
-    return c == 'a' || c == 'A' ||
-           c == 'c' || c == 'C' ||
-           c == 'g' || c == 'G' ||
-           c == 't' || c == 'T' ||
-           c == 'n' || c == 'N';
-}
 
 
 /* Read the next sequence in an open FASTA files.
@@ -108,101 +109,68 @@ size_t read_fasta(FILE* file, namedseq_t** out)
     size_t n = 0;
     namedseq_t* seqs = malloc(size * sizeof(namedseq_t));
 
-    const size_t bufsize = 1024;
+    const size_t bufsize = 1000000;
     char* buf = malloc_or_die(bufsize); buf[0] = '\0';
-    char* next = buf;
+    char* next;
+    size_t readlen;
 
-    str_t name;
-    str_t seq;
+    /* The three states are:
+     *   0: Beginning of file.
+     *   1. Reading a sequence name.
+     *   2. Reading a sequence.
+     */
+    int state = 0;
 
-    str_init(&name);
-    str_init(&seq);
+    /* Are we at the beginning of a line. */
+    bool linestart = true;
 
-    /* The three parser states are:
-         0 : reading seqname
-         1 : reading sequence
-         2 : reading sequence (line beginning)
-    */
-    int state = 2;
-
-    while (true) {
-        /* end of buffer */
-        if (*next == '\0') {
-            if (fgets(buf, bufsize, file) == NULL) {
-                /* end of file */
-                break;
-            }
-            else {
-                next = buf;
-                continue;
-            }
-        }
-        else if (state == 0) {
-            if (*next == '\n') {
-                str_append_char(&name, '\0');
-                char* c = strchr((char*) name.s, ' ');
-                if (c != NULL) {
-                    *c = '\0';
-                    name.n = c - (char*) name.s;
-                }
-
-                fprintf(stderr, "\treading %s...\n", name.s);
-
-                state = 2;
+    while ((readlen = fread(buf, 1, bufsize, file))) {
+        next = buf;
+        char* end = buf + readlen;
+        while (next < end) {
+            /* found a new sequence */
+            if (linestart && next[0] == '>') {
+                state = 1;
+                linestart = false;
+                next++;
 
                 if (n >= size) {
                     size *= 2;
                     seqs = realloc_or_die(seqs, size * sizeof(namedseq_t));
                 }
-
-                seqs[n].name = malloc(name.n + 1);
-                memcpy(seqs[n].name, name.s, name.n);
-                seqs[n].name[name.n] = '\0';
-
+                str_init(&seqs[n].name);
+                str_init(&seqs[n].seq);
                 ++n;
-            }
-            else {
-                str_append_char(&name, *next);
+
+                continue;
             }
 
-            ++next;
-        }
-        else if (state == 1 || state == 2) {
-            if (*next == '\n') {
-                state = 2;
+            char* u = memchr(next, '\n', end - next);
+            if (u == NULL) {
+                linestart = false;
+                u = end;
             }
-            else if (is_nt_char(*next)) {
-                str_append_char(&seq, *next);
-                state = 1;
-            }
-            else if (state == 2 && *next == '>') {
-                if (n > 0) {
-                    seqs[n-1].seq = malloc(seq.n + 1);
-                    memcpy(seqs[n-1].seq, seq.s, seq.n);
-                    seqs[n-1].seq[seq.n] = '\0';
+            else linestart = true;
+
+            if (state == 1) {
+                str_append(&seqs[n-1].name, next, u - next);
+                if (linestart) {
+                    str_append_char(&seqs[n-1].name, '\0');
+                    fprintf(stderr, "Reading %s...\n", seqs[n-1].name.s);
+                    state = 2;
                 }
-
-                name.n = 0;
-                seq.n = 0;
-                state = 0;
             }
-            else {
-                fprintf(stderr, "Error parsing FASTA file: "
-                                "unexpected character '%c'.", *next);
+            else if (state == 2) {
+                str_append(&seqs[n-1].seq, next, u - next);
             }
 
-            ++next;
+            next = u + 1;
+            linestart = true;
         }
     }
 
-    if (n > 0) {
-        seqs[n-1].seq = malloc(seq.n + 1);
-        memcpy(seqs[n-1].seq, seq.s, seq.n);
-        seqs[n-1].seq[seq.n] = '\0';
-    }
-
-    *out = seqs;
+    free(buf);
+    if(out) *out = seqs;
     return n;
 }
-
 

@@ -14,6 +14,7 @@ static double std_length  = 500;
 static double fore_log_p, fore_log_q, back_log_p, back_log_q;
 
 
+#if 0
 static double logaddexp(double x, double y)
 {
     double u = x - y;
@@ -25,6 +26,7 @@ static double logaddexp(double x, double y)
         return x + y;
     }
 }
+#endif
 
 
 double f(val_t x_, idx_t k_)
@@ -131,14 +133,13 @@ int main(int argc, char* argv[])
     uint64_t cg_count = 0;
     uint64_t count = 0;
     for (i = 0; i < num_seqs; ++i) {
-        size_t n = strlen(seqs[i].seq);
-        for (j = 0; j < n - 1; ++j) {
-            if (toupper(seqs[i].seq[j])     == 'C' &&
-                toupper(seqs[i].seq[j + 1]) == 'G') {
+        for (j = 0; j < seqs[i].seq.n - 1; ++j) {
+            if (toupper(seqs[i].seq.s[j])     == 'C' &&
+                toupper(seqs[i].seq.s[j + 1]) == 'G') {
                 cg_count++;
             }
         }
-        count += n - 1;
+        count += seqs[i].seq.n - 1;
     }
     double cg_pr = (double) cg_count / (double) count;
     fprintf(stderr, "background CG probability: %0.4f\n", cg_pr);
@@ -153,39 +154,37 @@ int main(int argc, char* argv[])
     /* Allocate a vector. */
     size_t xs_size = 0;
     for (i = 0; i < num_seqs; ++i) {
-        size_t n = strlen(seqs[i].seq);
-        if (n > xs_size) xs_size = n;
+        if (seqs[i].seq.n > xs_size) xs_size = seqs[i].seq.n;
     }
     double* xs = malloc_or_die(xs_size * sizeof(double));
 
     /* Process sequences */
     for (i = 0; i < num_seqs; ++i) {
-        fprintf(stderr, "searching %s...\n", seqs[i].name);
+        fprintf(stderr, "searching %s...\n", seqs[i].name.s);
 
-        size_t n = strlen(seqs[i].seq);
-        if (n < 2) continue;
+        if (seqs[i].seq.n < 2) continue;
 
-        memset(xs, 0, n * sizeof(double));
+        memset(xs, 0, seqs[i].seq.n * sizeof(double));
 
         size_t j;
-        for (j = 0; j < n - 1; ++j) {
-            if (toupper(seqs[i].seq[j])     == 'C' &&
-                toupper(seqs[i].seq[j + 1]) == 'G') {
+        for (j = 0; j < seqs[i].seq.n - 1; ++j) {
+            if (toupper(seqs[i].seq.s[j])     == 'C' &&
+                toupper(seqs[i].seq.s[j + 1]) == 'G') {
                 xs[j] = 1.0;
             }
         }
 
-        vector_t* vec = vector_create(xs, n);
+        vector_t* vec = vector_create(xs, seqs[i].seq.n);
 
         interval_t* out;
         size_t out_count = peakolate(vec, f, g,
                                      min_length, max_length,
                                      0.10,
                                      /*log(0.99),*/
-                                     0, &out);
+                                     0, true, &out);
 
         for (j = 0; j < out_count; ++j) {
-            printf("%s\t%lu\t%lu\t%e\n", seqs[i].name,
+            printf("%s\t%lu\t%lu\t%e\n", seqs[i].name.s,
                    (unsigned long) out[j].start, (unsigned long) out[j].end + 1,
                    out[j].x);
                    /*out[j].density / M_LN10);*/
@@ -195,6 +194,12 @@ int main(int argc, char* argv[])
         vector_free(vec);
     }
 
+    for (i = 0; i < num_seqs; ++i) {
+        str_free(&seqs[i].name);
+        str_free(&seqs[i].seq);
+    }
+
+    free(seqs);
     return EXIT_SUCCESS;
 }
 
